@@ -218,7 +218,7 @@ public class SandGridWorld : MonoBehaviour
                 float wx = SolarisConfig.GridToWorldX(x);
                 float wz = SolarisConfig.GridToWorldZ(z);
                 _vertices[idx] = new Vector3(wx, Heights[idx], wz);
-                _uvs[idx] = new Vector2((float)x / (N - 1), (float)z / (N - 1));
+                _uvs[idx] = new Vector2(wx * 0.075f, wz * 0.075f);
             }
         }
 
@@ -234,12 +234,12 @@ public class SandGridWorld : MonoBehaviour
 
                 // Clockwise winding (viewed from +Y, normal points up towards the sky)
                 _triangles[t++] = i0;
-                _triangles[t++] = i1;
                 _triangles[t++] = i2;
+                _triangles[t++] = i1;
 
-                _triangles[t++] = i1;
-                _triangles[t++] = i3;
                 _triangles[t++] = i2;
+                _triangles[t++] = i3;
+                _triangles[t++] = i1;
             }
         }
 
@@ -264,24 +264,50 @@ public class SandGridWorld : MonoBehaviour
         _meshFilter.sharedMesh = _terrainMesh;
         _meshCollider.sharedMesh = _terrainMesh;
 
-        // Standard Tiled Terrain Material
-        Shader stdShader = Shader.Find("Standard") ?? Shader.Find("Diffuse");
-        _terrainMat = new Material(stdShader);
+        // Trash-to-Nature Blend Material
+        Shader blendShader = Shader.Find("Solaris/TerrainTrashToNature") ?? Shader.Find("Diffuse");
+        _terrainMat = new Material(blendShader);
 
+        // 1. User's endless trash texture
         Texture2D trashTex = null;
 #if UNITY_EDITOR
-        string texPath = "Assets/Textures/TrashDebris_Seamless.png";
-        trashTex = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
-#endif
-        if (trashTex == null)
+        string trashPath = "Assets/Textures/TrashTexture_Endless.jpg";
+        var trashImp = UnityEditor.AssetImporter.GetAtPath(trashPath) as UnityEditor.TextureImporter;
+        if (trashImp != null && (trashImp.wrapMode != TextureWrapMode.Repeat || trashImp.mipmapEnabled))
         {
-            trashTex = _GenerateTrashTexture(256);
+            trashImp.wrapMode = TextureWrapMode.Repeat;
+            trashImp.filterMode = FilterMode.Bilinear;
+            trashImp.mipmapEnabled = false;
+            trashImp.anisoLevel = 16;
+            trashImp.SaveAndReimport();
         }
+        trashTex = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(trashPath);
+#endif
+        if (trashTex == null) trashTex = _GenerateTrashTexture(256);
         trashTex.wrapMode = TextureWrapMode.Repeat;
         trashTex.filterMode = FilterMode.Bilinear;
 
-        _terrainMat.mainTexture = trashTex;
-        _terrainMat.mainTextureScale = new Vector2(48f, 48f);
+        // 2. Reclaimed lush grass & flowers texture
+        Texture2D grassTex = null;
+#if UNITY_EDITOR
+        string grassPath = "Assets/Textures/GrassFlowers_Seamless.png";
+        var grassImp = UnityEditor.AssetImporter.GetAtPath(grassPath) as UnityEditor.TextureImporter;
+        if (grassImp != null && (grassImp.wrapMode != TextureWrapMode.Repeat || grassImp.mipmapEnabled))
+        {
+            grassImp.wrapMode = TextureWrapMode.Repeat;
+            grassImp.filterMode = FilterMode.Bilinear;
+            grassImp.mipmapEnabled = false;
+            grassImp.anisoLevel = 16;
+            grassImp.SaveAndReimport();
+        }
+        grassTex = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(grassPath);
+#endif
+        if (grassTex == null) grassTex = _GenerateGrassTexture(256);
+        grassTex.wrapMode = TextureWrapMode.Repeat;
+        grassTex.filterMode = FilterMode.Bilinear;
+
+        _terrainMat.SetTexture("_TrashTex", trashTex);
+        _terrainMat.SetTexture("_GrassTex", grassTex);
         _meshRenderer.sharedMaterial = _terrainMat;
     }
 
@@ -294,18 +320,8 @@ public class SandGridWorld : MonoBehaviour
             {
                 int idx = z * N + x;
                 float trash = TrashDensity != null ? TrashDensity[idx] : Mathf.Clamp01(Heights[idx] / 1.5f);
-                float grass = Grass != null ? Grass[idx] : 0f;
-                float road = (IsRoad != null && IsRoad[idx] == 1) ? 1f : 0f;
-
-                // R = Trash, G = Grass, B = Road, A = 1
-                _colorBuffer[idx] = new Color(trash, grass, road, 1f);
+                _colorBuffer[idx] = new Color(trash, 0f, 0f, 1f);
             }
-        }
-
-        if (_splatMap != null)
-        {
-            _splatMap.SetPixels(_colorBuffer);
-            _splatMap.Apply(false);
         }
     }
 

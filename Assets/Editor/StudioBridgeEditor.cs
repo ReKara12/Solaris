@@ -174,6 +174,7 @@ namespace AutonomousStudio.EditorBridge
                 responseJson = RunOnMainThread(() =>
                 {
                     lock (_logLock) { _compilerErrors.Clear(); _runtimeErrors.Clear(); }
+                    AssetDatabase.ImportAsset("Assets/Shaders/TerrainTrashToNature.shader", ImportAssetOptions.ForceUpdate);
                     AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
                     return $"{{\"ok\":true,\"isCompiling\":{(EditorApplication.isCompiling ? "true" : "false")}}}";
                 });
@@ -267,27 +268,41 @@ namespace AutonomousStudio.EditorBridge
                     if (mr == null || mr.sharedMaterial == null) return "{\"ok\":false,\"error\":\"No MeshRenderer or Material\"}";
                     var mat = mr.sharedMaterial;
                     string shName = mat.shader != null ? mat.shader.name : "NULL";
-                    var mainTex = mat.GetTexture("_MainTex");
-                    string mainTexInfo = mainTex != null ? $"{mainTex.name} ({mainTex.width}x{mainTex.height}, wrap={mainTex.wrapMode})" : "NULL";
-                    return $"{{\"ok\":true,\"shader\":\"{EscapeJson(shName)}\",\"uvs\":\"{uvInfo}\",\"mainTex\":\"{mainTexInfo}\"}}";
+                    var trashTex = mat.GetTexture("_TrashTex");
+                    string trashInfo = trashTex != null ? $"{trashTex.name} ({trashTex.width}x{trashTex.height}, wrap={trashTex.wrapMode})" : "NULL";
+                    var grassTex = mat.GetTexture("_GrassTex");
+                    string grassInfo = grassTex != null ? $"{grassTex.name} ({grassTex.width}x{grassTex.height}, wrap={grassTex.wrapMode})" : "NULL";
+                    float trashTiling = mat.HasProperty("_TrashTiling") ? mat.GetFloat("_TrashTiling") : -1f;
+                    Camera c = Camera.main;
+                    string camInfo = c != null ? $"pos={c.transform.position}, rot={c.transform.eulerAngles}, fov={c.fieldOfView}, cullingMask={c.cullingMask:X}, clearFlags={c.clearFlags}" : "NO_CAM";
+                    string layerInfo = $"worldLayer={world.gameObject.layer}, mrEnabled={mr.enabled}, isVisible={mr.isVisible}";
+                    int msgCount = ShaderUtil.GetShaderMessageCount(mat.shader);
+                    var msgs = new List<string>();
+                    for (int i = 0; i < msgCount; i++)
+                    {
+                        var msg = ShaderUtil.GetShaderMessages(mat.shader)[i];
+                        msgs.Add($"{msg.severity}: {msg.message} (line {msg.line})");
+                    }
+                    return $"{{\"ok\":true,\"shader\":\"{EscapeJson(shName)}\",\"isSupported\":{mat.shader.isSupported},\"cam\":\"{camInfo}\",\"layerInfo\":\"{layerInfo}\"}}";
                 });
             }
             else if (path == "/raycast_test")
             {
                 responseJson = RunOnMainThread(() =>
                 {
-                    var allMrs = UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None);
-                    var list = new List<string>();
-                    foreach (var m in allMrs)
+                    Camera cam = Camera.main;
+                    if (cam == null) return "{\"ok\":false,\"error\":\"No camera\"}";
+                    var ray = cam.ScreenPointToRay(new Vector3(640, 360, 0));
+                    var hits = Physics.RaycastAll(ray, 500f);
+                    var hitList = new List<string>();
+                    foreach (var h in hits)
                     {
-                        if (m.bounds.extents.x > 30f)
-                        {
-                            string matName = m.sharedMaterial != null ? m.sharedMaterial.name : "NULL";
-                            string shName = (m.sharedMaterial != null && m.sharedMaterial.shader != null) ? m.sharedMaterial.shader.name : "NULL";
-                            list.Add($"{m.gameObject.name} (pos={m.transform.position}, extents={m.bounds.extents}, mat={matName}, shader={shName})");
-                        }
+                        var mr = h.collider.GetComponent<MeshRenderer>();
+                        string matName = mr != null && mr.sharedMaterial != null ? mr.sharedMaterial.name : "NULL";
+                        string shName = mr != null && mr.sharedMaterial != null && mr.sharedMaterial.shader != null ? mr.sharedMaterial.shader.name : "NULL";
+                        hitList.Add($"{h.collider.gameObject.name} (dist={h.distance:F1}, point={h.point}, mat={matName}, shader={shName})");
                     }
-                    return $"{{\"ok\":true,\"largeRenderers\":[\"{string.Join("\",\"", list.Select(EscapeJson))}\"]}}";
+                    return $"{{\"ok\":true,\"hits\":[\"{string.Join("\",\"", hitList.Select(EscapeJson))}\"]}}";
                 });
             }
             else if (path == "/capture_screenshot")
@@ -313,6 +328,43 @@ namespace AutonomousStudio.EditorBridge
                     File.WriteAllBytes(shotPath, tex.EncodeToPNG());
                     UnityEngine.Object.DestroyImmediate(tex);
                     return "{\"ok\":true,\"captured\":true}";
+                });
+            }
+            else if (path == "/vacuum_test")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var world = UnityEngine.Object.FindFirstObjectByType<SandGridWorld>();
+                    var player = UnityEngine.Object.FindFirstObjectByType<EcoReclaimerPlayer>();
+                    if (world == null || player == null) return "{\"ok\":false,\"error\":\"World or Player null\"}";
+                    Vector3 vacuumTarget = player.transform.position + new Vector3(0f, 0f, 6.0f);
+                    float removed = world.VacuumAtPoint(vacuumTarget, player.transform.position, 5.5f, 50.0f, 1.0f, player);
+                    // Also trigger mesh update immediately
+                    var updateMethod = typeof(SandGridWorld).GetMethod("_UpdateMeshAndColors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (updateMethod != null) updateMethod.Invoke(world, null);
+
+                    // Capture screenshot
+                    Camera cam = Camera.main ?? UnityEngine.Object.FindFirstObjectByType<Camera>();
+                    if (cam != null)
+                    {
+                        string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                        string shotPath = Path.Combine(projectRoot, "screenshot.png");
+                        int w = 1280, h = 720;
+                        var rt = new RenderTexture(w, h, 24);
+                        var prev = cam.targetTexture;
+                        cam.targetTexture = rt;
+                        cam.Render();
+                        RenderTexture.active = rt;
+                        var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+                        tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                        tex.Apply();
+                        cam.targetTexture = prev;
+                        RenderTexture.active = null;
+                        UnityEngine.Object.DestroyImmediate(rt);
+                        File.WriteAllBytes(shotPath, tex.EncodeToPNG());
+                        UnityEngine.Object.DestroyImmediate(tex);
+                    }
+                    return $"{{\"ok\":true,\"removed\":{removed:F2}}}";
                 });
             }
 
@@ -389,6 +441,9 @@ namespace AutonomousStudio.EditorBridge
                 cam = Camera.main ?? UnityEngine.Object.FindFirstObjectByType<Camera>();
                 if (cam != null)
                 {
+                    cam.transform.position = new Vector3(0f, 18f, 15f);
+                    cam.transform.LookAt(new Vector3(0f, 0f, 28f));
+                    cam.clearFlags = CameraClearFlags.Skybox;
                     int w = 1280, h = 720;
                     var rt = new RenderTexture(w, h, 24);
                     var prev = cam.targetTexture;
