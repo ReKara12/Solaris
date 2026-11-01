@@ -198,6 +198,123 @@ namespace AutonomousStudio.EditorBridge
             {
                 responseJson = RunOnMainThread(() => BootstrapAndCapture(), 20000);
             }
+            else if (path == "/play")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    EditorApplication.isPlaying = true;
+                    return $"{{\"ok\":true,\"isPlaying\":true}}";
+                });
+            }
+            else if (path == "/stop")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    EditorApplication.isPlaying = false;
+                    return $"{{\"ok\":true,\"isPlaying\":false}}";
+                });
+            }
+            else if (path == "/start_game")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var gm = UnityEngine.Object.FindFirstObjectByType<SolarisGameManager>();
+                    if (gm != null)
+                    {
+                        gm.StartGame();
+                        return "{\"ok\":true,\"started\":true}";
+                    }
+                    return "{\"ok\":false,\"error\":\"No GameManager\"}";
+                });
+            }
+            else if (path == "/ui_debug")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var ui = UnityEngine.Object.FindFirstObjectByType<SolarisUIManager>();
+                    if (ui == null) return "{\"ok\":false,\"error\":\"No UIManager\"}";
+                    var texts = ui.GetComponentsInChildren<UnityEngine.UI.Text>(true);
+                    var list = new List<string>();
+                    foreach (var t in texts)
+                    {
+                        string fontName = t.font != null ? t.font.name : "NULL_FONT";
+                        list.Add($"{t.gameObject.name}: '{t.text}' ({fontName}, active={t.gameObject.activeInHierarchy})");
+                    }
+                    return $"{{\"ok\":true,\"count\":{texts.Length},\"texts\":[\"{string.Join("\",\"", list.Select(EscapeJson))}\"]}}";
+                });
+            }
+            else if (path == "/terrain_debug")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var world = UnityEngine.Object.FindFirstObjectByType<SandGridWorld>();
+                    if (world == null) return "{\"ok\":false,\"error\":\"No SandGridWorld\"}";
+                    var mf = world.GetComponent<MeshFilter>();
+                    var mesh = mf != null ? mf.sharedMesh : null;
+                    string colInfo = "NO_MESH";
+                    if (mesh != null)
+                    {
+                        var cols = mesh.colors;
+                        if (cols != null && cols.Length > 0)
+                        {
+                            colInfo = $"Count={cols.Length}, C0={cols[0]}, Center={cols[cols.Length / 2]}";
+                        }
+                        else colInfo = "COLORS_NULL_OR_EMPTY";
+                    }
+                    var uvs = mesh != null ? mesh.uv : null;
+                    string uvInfo = uvs != null && uvs.Length > 0 ? $"Count={uvs.Length}, UV0={uvs[0]}, Center={uvs[uvs.Length/2]}" : "NO_UVS";
+                    var mr = world.GetComponent<MeshRenderer>();
+                    if (mr == null || mr.sharedMaterial == null) return "{\"ok\":false,\"error\":\"No MeshRenderer or Material\"}";
+                    var mat = mr.sharedMaterial;
+                    string shName = mat.shader != null ? mat.shader.name : "NULL";
+                    var mainTex = mat.GetTexture("_MainTex");
+                    string mainTexInfo = mainTex != null ? $"{mainTex.name} ({mainTex.width}x{mainTex.height}, wrap={mainTex.wrapMode})" : "NULL";
+                    return $"{{\"ok\":true,\"shader\":\"{EscapeJson(shName)}\",\"uvs\":\"{uvInfo}\",\"mainTex\":\"{mainTexInfo}\"}}";
+                });
+            }
+            else if (path == "/raycast_test")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var allMrs = UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None);
+                    var list = new List<string>();
+                    foreach (var m in allMrs)
+                    {
+                        if (m.bounds.extents.x > 30f)
+                        {
+                            string matName = m.sharedMaterial != null ? m.sharedMaterial.name : "NULL";
+                            string shName = (m.sharedMaterial != null && m.sharedMaterial.shader != null) ? m.sharedMaterial.shader.name : "NULL";
+                            list.Add($"{m.gameObject.name} (pos={m.transform.position}, extents={m.bounds.extents}, mat={matName}, shader={shName})");
+                        }
+                    }
+                    return $"{{\"ok\":true,\"largeRenderers\":[\"{string.Join("\",\"", list.Select(EscapeJson))}\"]}}";
+                });
+            }
+            else if (path == "/capture_screenshot")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    Camera cam = Camera.main ?? UnityEngine.Object.FindFirstObjectByType<Camera>();
+                    if (cam == null) return "{\"ok\":false,\"error\":\"No camera\"}";
+                    string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                    string shotPath = Path.Combine(projectRoot, "screenshot.png");
+                    int w = 1280, h = 720;
+                    var rt = new RenderTexture(w, h, 24);
+                    var prev = cam.targetTexture;
+                    cam.targetTexture = rt;
+                    cam.Render();
+                    RenderTexture.active = rt;
+                    var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+                    tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                    tex.Apply();
+                    cam.targetTexture = prev;
+                    RenderTexture.active = null;
+                    UnityEngine.Object.DestroyImmediate(rt);
+                    File.WriteAllBytes(shotPath, tex.EncodeToPNG());
+                    UnityEngine.Object.DestroyImmediate(tex);
+                    return "{\"ok\":true,\"captured\":true}";
+                });
+            }
 
             byte[] buf = Encoding.UTF8.GetBytes(responseJson);
             ctx.Response.ContentType = "application/json; charset=utf-8";

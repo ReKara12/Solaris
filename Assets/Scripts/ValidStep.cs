@@ -1,1 +1,0 @@
-namespace Game { public class ValidStep { public float CalculateMass(int tier) { return 1f; } } }
