@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -554,14 +554,14 @@ public class SolarisUIManager : MonoBehaviour
             new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(560f, 40f), new Vector2(0f, -25f));
 
         string guide =
-            "• WASD / Ok Tuşları: Karakter Hareketi & Koşma\n" +
-            "• Fare İmleci: Yönelme ve Nişan Alma\n" +
-            "• Sol Tık / [E]: Siklon Vakum Başlığı (Kum Toplama)\n" +
-            "• Sağ Tık: Silika Kristal Tüfeği (Düşman & Vent Saldırısı)\n" +
-            "• Space: Sismik Şok Dalgası (AoE Kum Temizleme & İtme)\n" +
-            "• [Q]: Güneş Plazma Mızrağı (Delici Işın Saldırısı)\n" +
-            "• [R]: Toz Tankını Arıt (Atölye/Merkezde bonuslu Silika)\n" +
-            "• [F]: Atölye Aç / Kapat (Eco-Hub [18, 14] Yanında)\n" +
+            "• WASD: Karakter Hareketi & Konum Alma\n" +
+            "• Fare: Nişan Alma ve Bakış Yönü\n" +
+            "• Sol Tık: Siklon Vakum (Atık Toplama & Şişen Düşmanı Sönümleme)\n" +
+            "• Sağ Tık: Cam Kırığı Saçması (Geri Dönüşüm Şarapneli / Shotgun)\n" +
+            "• Space: Eco-Dash (Hades Stili Hızlı Sıyrılma & i-frame Kaçış)\n" +
+            "• [Q]: Pnömatik Hurda Pistonu (Ağır İtici / Duvara Çarpma Sersemletmesi)\n" +
+            "• [F]: Termal Isı Tahliyesi (Overheat Vent Blast / Isıyı Boşalt ve Yak)\n" +
+            "• [R]: Toz Tankını Arıt (Eco-Hub Yanında Bonuslu Silika)\n" +
             "• [T]: Yeşil Kuşak Vaha Ağacı Dik (💎 8 Silika)\n" +
             "• ESC: Duraklat / Pencereleri Kapat";
 

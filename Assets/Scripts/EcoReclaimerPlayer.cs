@@ -28,6 +28,14 @@ public class EcoReclaimerPlayer : MonoBehaviour
     public float LanceCooldown = 0f;
     public float BlasterCooldown = 0f;
 
+    [Header("Eco-Dash (Hades Evasion)")]
+    public bool IsDashing { get; private set; } = false;
+    public float DashCooldown = 0f;
+    public const float DASH_COOLDOWN_TIME = 0.85f;
+    private float _dashTimer = 0f;
+    private Vector3 _dashDirection = Vector3.forward;
+    private ParticleSystem _dashDustPS;
+
     [Header("State & Environmental Forces")]
     public bool IsVacuuming { get; private set; }
     public bool StormSlowActive = false;
@@ -52,8 +60,16 @@ public class EcoReclaimerPlayer : MonoBehaviour
     private Light _headlight;
     private Transform _nozzle;
     private LineRenderer _vacuumLine;
+    private LineRenderer _vacuumReticle;
+    private Material _muzzleGlowMat;
     private Animator _animator;
     private float _walkCycle = 0f;
+
+    // Weapon Recoil & Physical Pushback
+    private Transform _riflePivot;
+    private Vector3 _rifleBaseLocalPos = new Vector3(0.48f, 1.15f, 0.35f);
+    private Quaternion _rifleBaseLocalRot = Quaternion.identity;
+    private Vector3 _recoilVelocity = Vector3.zero;
 
     // Astroneer-style closed-loop particle suction
     private ParticleSystem _suctionStreamPS;
@@ -89,6 +105,57 @@ public class EcoReclaimerPlayer : MonoBehaviour
 
         BuildHumanoidHierarchy();
         BuildSuctionParticleSystem();
+        BuildDashParticleSystem();
+    }
+
+    private void BuildDashParticleSystem()
+    {
+        Transform old = transform.Find("DashDustPS");
+        if (old != null)
+        {
+            if (Application.isPlaying) SolarisConfig.SafeDestroy(old.gameObject);
+            else DestroyImmediate(old.gameObject);
+        }
+
+        GameObject psGo = new GameObject("DashDustPS", typeof(ParticleSystem));
+        psGo.transform.SetParent(transform, false);
+        _dashDustPS = psGo.GetComponent<ParticleSystem>();
+
+        var main = _dashDustPS.main;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 256;
+        main.startLifetime = 0.45f;
+        main.startSpeed = 8f;
+        main.playOnAwake = false;
+
+        var em = _dashDustPS.emission;
+        em.enabled = false;
+
+        var rend = psGo.GetComponent<ParticleSystemRenderer>();
+        if (rend != null)
+        {
+            Shader sh = Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+            if (sh != null) rend.sharedMaterial = new Material(sh);
+        }
+    }
+
+    private void EmitDashDust(Vector3 pos, Vector3 backwardDir)
+    {
+        if (_dashDustPS == null) return;
+        for (int i = 0; i < 22; i++)
+        {
+            Vector3 vel = (backwardDir + Random.insideUnitSphere * 0.45f).normalized * Random.Range(6f, 16f) + Vector3.up * 1.5f;
+            Color dustCol = Random.value > 0.4f ? new Color(0.85f, 0.72f, 0.52f, 0.8f) : new Color(0.4f, 0.95f, 1f, 0.7f);
+            ParticleSystem.EmitParams ep = new ParticleSystem.EmitParams
+            {
+                position = pos + Random.insideUnitSphere * 0.3f,
+                velocity = vel,
+                startSize = Random.Range(0.25f, 0.65f),
+                startLifetime = Random.Range(0.35f, 0.55f),
+                startColor = dustCol
+            };
+            _dashDustPS.Emit(ep, 1);
+        }
     }
 
     private void BuildSuctionParticleSystem()
@@ -125,26 +192,30 @@ public class EcoReclaimerPlayer : MonoBehaviour
     private void EmitSuctionParticles(Vector3 hitPoint, float radius)
     {
         if (_suctionStreamPS == null) return;
-        int count = UnityEngine.Random.Range(3, 7);
+        int count = UnityEngine.Random.Range(4, 9);
         for (int i = 0; i < count; i++)
         {
-            Vector2 offset = UnityEngine.Random.insideUnitCircle * (radius * 0.75f);
+            Vector2 offset = UnityEngine.Random.insideUnitCircle * (radius * 0.85f);
             Vector3 spawnPos = hitPoint + new Vector3(offset.x, 0.08f, offset.y);
-            Vector3 launchVel = Vector3.up * 1.8f + UnityEngine.Random.insideUnitSphere * 0.6f;
+            Vector3 launchVel = Vector3.up * UnityEngine.Random.Range(2.2f, 3.8f) + UnityEngine.Random.insideUnitSphere * 0.8f;
 
             Color pColor;
-            int colType = UnityEngine.Random.Range(0, 4);
-            if (colType == 0) pColor = new Color(0.72f, 0.75f, 0.78f, 0.95f);
-            else if (colType == 1) pColor = new Color(0.95f, 0.55f, 0.15f, 0.95f);
-            else if (colType == 2) pColor = new Color(0f, 0.90f, 1f, 0.95f);
-            else pColor = new Color(0.25f, 0.22f, 0.20f, 0.90f);
+            int colType = UnityEngine.Random.Range(0, 5);
+            if (colType == 0) pColor = new Color(0.72f, 0.75f, 0.78f, 0.95f);       // Metallic scrap
+            else if (colType == 1) pColor = new Color(0.95f, 0.45f, 0.12f, 0.95f);  // Rust / orange can
+            else if (colType == 2) pColor = new Color(0f, 0.90f, 1f, 0.95f);        // Cyan energy spark
+            else if (colType == 3) pColor = new Color(0.18f, 0.65f, 0.25f, 0.90f);  // Green bottle shard
+            else pColor = new Color(0.32f, 0.26f, 0.20f, 0.90f);                    // Earth / dirt clod
+
+            bool isChunk = (i == 0 || i == 1);
+            float pSize = isChunk ? UnityEngine.Random.Range(0.20f, 0.35f) : UnityEngine.Random.Range(0.08f, 0.16f);
 
             ParticleSystem.EmitParams ep = new ParticleSystem.EmitParams
             {
                 position = spawnPos,
                 velocity = launchVel,
-                startSize = UnityEngine.Random.Range(0.06f, 0.14f),
-                startLifetime = UnityEngine.Random.Range(0.45f, 0.75f),
+                startSize = pSize,
+                startLifetime = UnityEngine.Random.Range(0.55f, 0.85f),
                 startColor = pColor
             };
             _suctionStreamPS.Emit(ep, 1);
@@ -290,7 +361,8 @@ public class EcoReclaimerPlayer : MonoBehaviour
         GameObject nozzleGo = CreatePrimitivePart(PrimitiveType.Cylinder, "CycloneNozzle", rifleGroup.transform, new Vector3(0f, 0f, 0.95f), new Vector3(0.24f, 0.2f, 0.24f), Quaternion.Euler(90f, 0f, 0f), platingMat);
         _nozzle = nozzleGo.transform;
 
-        CreatePrimitivePart(PrimitiveType.Cylinder, "MuzzleGlowRing", rifleGroup.transform, new Vector3(0f, 0f, 1.12f), new Vector3(0.26f, 0.03f, 0.26f), Quaternion.Euler(90f, 0f, 0f), cyanGlowMat);
+        _muzzleGlowMat = cyanGlowMat;
+        CreatePrimitivePart(PrimitiveType.Cylinder, "MuzzleGlowRing", rifleGroup.transform, new Vector3(0f, 0f, 1.12f), new Vector3(0.26f, 0.03f, 0.26f), Quaternion.Euler(90f, 0f, 0f), _muzzleGlowMat);
 
         GameObject muzGo = new GameObject("MuzzleTransform");
         muzGo.transform.SetParent(rifleGroup.transform, false);
@@ -304,6 +376,17 @@ public class EcoReclaimerPlayer : MonoBehaviour
         _vacuumLine.material = cyanGlowMat;
         _vacuumLine.positionCount = 2;
         _vacuumLine.enabled = false;
+
+        GameObject reticleGo = new GameObject("ExcavationReticle");
+        reticleGo.transform.SetParent(transform, false);
+        _vacuumReticle = reticleGo.AddComponent<LineRenderer>();
+        _vacuumReticle.useWorldSpace = true;
+        _vacuumReticle.loop = true;
+        _vacuumReticle.startWidth = 0.15f;
+        _vacuumReticle.endWidth = 0.15f;
+        _vacuumReticle.material = cyanGlowMat;
+        _vacuumReticle.positionCount = 36;
+        _vacuumReticle.enabled = false;
 
         _animator = GetComponentInChildren<Animator>();
     }
@@ -345,6 +428,13 @@ public class EcoReclaimerPlayer : MonoBehaviour
         if (ShockCooldown > 0f) ShockCooldown -= dt;
         if (LanceCooldown > 0f) LanceCooldown -= dt;
         if (BlasterCooldown > 0f) BlasterCooldown -= dt;
+        if (DashCooldown > 0f) DashCooldown -= dt;
+
+        if (IsDashing)
+        {
+            _dashTimer -= dt;
+            if (_dashTimer <= 0f) IsDashing = false;
+        }
 
         // 3. Oasis Bio-Field Buffs
         bool inOasis = _world != null && _world.IsInOasis(transform.position);
@@ -367,6 +457,16 @@ public class EcoReclaimerPlayer : MonoBehaviour
         if (Overheated && Heat < 28f)
         {
             Overheated = false;
+        }
+
+        // Update Muzzle Glow Ring based on Heat (Diegetic feedback)
+        if (_muzzleGlowMat != null)
+        {
+            float heatRatio = Mathf.Clamp01(Heat / HeatMax);
+            Color glowColor = Overheated
+                ? (Mathf.Sin(Time.time * 24f) > 0f ? Color.red * 3.5f : new Color(0.6f, 0.1f, 0f))
+                : Color.Lerp(new Color(0f, 0.9f, 1f) * 1.5f, new Color(1f, 0.35f, 0.05f) * 2.5f, heatRatio);
+            _muzzleGlowMat.SetColor("_EmissionColor", glowColor);
         }
 
         // 5. Shoulder Headlight
@@ -405,6 +505,27 @@ public class EcoReclaimerPlayer : MonoBehaviour
 
     private void ProcessMovementAndAim(float dt, bool inOasis)
     {
+        // Eco-Dash Movement Override
+        if (IsDashing)
+        {
+            Vector3 dashMove = _dashDirection * (36f * dt);
+            Vector3 dashTarget = transform.position + dashMove;
+            dashTarget.x = Mathf.Clamp(dashTarget.x, -206f, 206f);
+            dashTarget.z = Mathf.Clamp(dashTarget.z, -206f, 206f);
+            if (_world != null)
+            {
+                dashTarget = _world.ResolveBuildingCollisions(dashTarget, 1.15f);
+                dashTarget.y = _world.GetHeight(dashTarget.x, dashTarget.z) + 0.04f;
+            }
+            transform.position = dashTarget;
+
+            if (_dashDirection.sqrMagnitude > 0.01f)
+            {
+                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(_dashDirection), 20f * dt);
+            }
+            return;
+        }
+
         float h = Input.GetAxisRaw("Horizontal");
         float v = Input.GetAxisRaw("Vertical");
         Vector3 inputDir = new Vector3(h, 0f, v);
@@ -509,7 +630,7 @@ public class EcoReclaimerPlayer : MonoBehaviour
                 targetPoint.y = _world.GetHeight(targetPoint.x, targetPoint.z);
             }
 
-            float brushRadius = 3.6f + NozzleLevel * 0.6f;
+            float brushRadius = 4.8f + NozzleLevel * 0.8f;
             float collected = _world != null ? _world.VacuumAtPoint(targetPoint, transform.position, brushRadius, vacuumPower, dt, this) : 0f;
             DustTank += collected * 16f;
 
@@ -529,7 +650,6 @@ public class EcoReclaimerPlayer : MonoBehaviour
             {
                 Heat = HeatMax;
                 Overheated = true;
-                SolarisUIManager.Instance?.ShowToast("AŞIRI ISINMA! Vakum soğuyana kadar kilitlendi.");
             }
 
             if (_nozzle != null)
@@ -543,60 +663,116 @@ public class EcoReclaimerPlayer : MonoBehaviour
                 _vacuumLine.SetPosition(0, MuzzleTransform.position);
                 _vacuumLine.SetPosition(1, targetPoint + Vector3.up * 0.08f);
             }
+
+            if (_vacuumReticle != null)
+            {
+                _vacuumReticle.enabled = true;
+                float pulse = 1.0f + Mathf.Sin(Time.time * 8f) * 0.05f;
+                float r = brushRadius * pulse;
+                float rotAngle = Time.time * 75f * Mathf.Deg2Rad;
+                for (int p = 0; p < 36; p++)
+                {
+                    float ang = (float)p / 36f * Mathf.PI * 2f + rotAngle;
+                    float px = targetPoint.x + Mathf.Cos(ang) * r;
+                    float pz = targetPoint.z + Mathf.Sin(ang) * r;
+                    float py = _world != null ? _world.GetHeight(px, pz) + 0.06f : targetPoint.y + 0.06f;
+                    _vacuumReticle.SetPosition(p, new Vector3(px, py, pz));
+                }
+            }
         }
         else
         {
             if (IsVacuuming) SetVacuumActive(false);
             if (_vacuumLine != null) _vacuumLine.enabled = false;
+            if (_vacuumReticle != null) _vacuumReticle.enabled = false;
         }
 
         // Steer all active suction particles in flight towards nozzle
         SteerSuctionParticles(dt);
 
-        // B. Right-Click (Silica Shard Blaster)
+        // B. Right-Click: Recycled Glass Shard Spreader (Shotgun)
         if (Input.GetMouseButton(1) && !Overheated)
         {
-            if (BlasterCooldown <= 0f)
+            Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
+            if (RecycledWeaponSystem.Instance != null)
             {
-                BlasterCooldown = 0.20f;
+                RecycledWeaponSystem.Instance.TryFireGlassScatter(muzPos, transform.forward);
+            }
+            else if (BlasterCooldown <= 0f)
+            {
+                BlasterCooldown = 0.22f;
                 Heat += 8f;
-                if (Heat >= HeatMax)
-                {
-                    Heat = HeatMax;
-                    Overheated = true;
-                    SolarisUIManager.Instance?.ShowToast("🔥 AŞIRI ISINMA! Silah soğuyana kadar kilitlendi.");
-                }
-
-                Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
+                if (Heat >= HeatMax) { Heat = HeatMax; Overheated = true; }
                 float dmg = 22f + BlasterLevel * 8f;
                 OutpostAndCombatManager.Instance?.FirePlayerBlaster(muzPos, transform.forward, dmg);
                 SolarisGameManager.Instance?.PlaySfx("blaster_shot");
             }
         }
 
-        // C. [SPACE] Seismic Shockwave
+        // C. [SPACE] Eco-Dash (Hades Evasion with i-frames)
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            TryTriggerShockwave();
+            TryTriggerEcoDash();
         }
 
-        // D. [Q] Solar Plasma Lance
+        // D. [Q] Pneumatic Scrap Piston / Harpoon Slug (Special Attack)
         if (Input.GetKeyDown(KeyCode.Q))
         {
-            TryFireSolarLance();
+            Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
+            if (RecycledWeaponSystem.Instance != null)
+            {
+                RecycledWeaponSystem.Instance.TryFireScrapPiston(muzPos, transform.forward);
+            }
+            else
+            {
+                TryFireSolarLance();
+            }
         }
 
-        // E. [R] Smelt Dust
+        // E. [F] Thermal Slag Vent Blast (Purges 65% Overheat)
+        if (Input.GetKeyDown(KeyCode.F))
+        {
+            if (RecycledWeaponSystem.Instance != null)
+            {
+                RecycledWeaponSystem.Instance.TryTriggerVentBlast();
+            }
+        }
+
+        // F. [R] Smelt Dust
         if (Input.GetKeyDown(KeyCode.R))
         {
             SmeltDust();
         }
 
-        // F. [T] Plant Oasis Tree
+        // G. [T] Plant Oasis Tree
         if (Input.GetKeyDown(KeyCode.T))
         {
             TryPlantOasisTree();
         }
+    }
+
+    /// <summary>
+    /// Executes a snappy, i-frame Hades-style evasion dash along movement input or forward direction.
+    /// </summary>
+    public bool TryTriggerEcoDash()
+    {
+        if (DashCooldown > 0f || IsDashing) return false;
+
+        float h = Input.GetAxisRaw("Horizontal");
+        float v = Input.GetAxisRaw("Vertical");
+        Vector3 inputDir = new Vector3(h, 0f, v);
+        if (inputDir.sqrMagnitude > 0.05f) _dashDirection = inputDir.normalized;
+        else _dashDirection = transform.forward;
+        _dashDirection.y = 0f;
+
+        IsDashing = true;
+        _dashTimer = 0.22f;
+        DashCooldown = DASH_COOLDOWN_TIME;
+
+        EmitDashDust(transform.position, -_dashDirection);
+        CombatJuice.Instance?.AddCameraTrauma(0.14f);
+        SolarisGameManager.Instance?.PlaySfx("sandstorm_wind");
+        return true;
     }
 
     private void SetVacuumActive(bool active)
@@ -605,6 +781,10 @@ public class EcoReclaimerPlayer : MonoBehaviour
         if (_vacuumLine != null && !active)
         {
             _vacuumLine.enabled = false;
+        }
+        if (_vacuumReticle != null && !active)
+        {
+            _vacuumReticle.enabled = false;
         }
     }
 
@@ -738,7 +918,10 @@ public class EcoReclaimerPlayer : MonoBehaviour
     /// </summary>
     public void TakeDamage(float dmg)
     {
+        if (IsDashing) return; // Invulnerability i-frame during Eco-Dash!
+
         HP -= dmg;
+        CombatJuice.Instance?.AddCameraTrauma(0.32f);
         SolarisGameManager.Instance?.PlaySfx("enemy_hit");
 
         if (HP <= 0f)
@@ -749,7 +932,6 @@ public class EcoReclaimerPlayer : MonoBehaviour
             Overheated = false;
             float respawnY = _world != null ? _world.GetHeight(0f, 28f) : 0f;
             transform.position = new Vector3(0f, respawnY + 0.04f, 28f);
-            SolarisUIManager.Instance?.ShowToast("⚠️ Eco-Reclaimer bayıldı! Merkez Eco-Hub'da yeniden doğdun.");
         }
     }
 

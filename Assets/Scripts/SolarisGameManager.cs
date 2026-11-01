@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -184,6 +184,20 @@ public class SolarisGameManager : MonoBehaviour
         SolarisUIManager.EnsureEventSystem();
         UI.InitializeUI(World, Player, Drones, Combat, this);
 
+        // F. CombatJuice System
+        if (FindFirstObjectByType<CombatJuice>() == null)
+        {
+            GameObject juiceGo = new GameObject("CombatJuice");
+            juiceGo.transform.SetParent(root.transform, false);
+            juiceGo.AddComponent<CombatJuice>();
+        }
+
+        // G. RecycledWeaponSystem
+        if (Player != null && Player.GetComponent<RecycledWeaponSystem>() == null)
+        {
+            Player.gameObject.AddComponent<RecycledWeaponSystem>();
+        }
+
         // 6. Build Storm Particle System
         BuildStormParticleSystem();
 
@@ -361,8 +375,15 @@ public class SolarisGameManager : MonoBehaviour
         if (MainCam != null && Player != null)
         {
             Vector3 targetCamPos = Player.transform.position + new Vector3(0f, 20f, -13f);
-            MainCam.transform.position = Vector3.Lerp(MainCam.transform.position, targetCamPos, Time.deltaTime * 6f);
+            MainCam.transform.position = Vector3.Lerp(MainCam.transform.position, targetCamPos, Time.deltaTime * 7f);
             MainCam.transform.LookAt(Player.transform.position + Vector3.up * 1.5f);
+
+            // Apply CombatJuice Trauma Camera Shake
+            if (CombatJuice.Instance != null)
+            {
+                MainCam.transform.position += CombatJuice.Instance.GetShakeOffset();
+                MainCam.transform.rotation = MainCam.transform.rotation * CombatJuice.Instance.GetShakeRotation();
+            }
         }
 
         // 3. ESC Handling
@@ -525,6 +546,16 @@ public class SolarisGameManager : MonoBehaviour
     public void PlaySfx(string name)
     {
         if (IsMuted || _sfxAudioSource == null || string.IsNullOrEmpty(name)) return;
+
+        // Dynamic pitch variation for organic combat impact feel
+        if (name == "blaster_shot" || name == "enemy_hit")
+        {
+            _sfxAudioSource.pitch = Random.Range(0.92f, 1.08f);
+        }
+        else
+        {
+            _sfxAudioSource.pitch = 1.0f;
+        }
 
         // 1. Try local audio clip cache
         if (_sfxClipCache.TryGetValue(name, out AudioClip cachedClip) && cachedClip != null)

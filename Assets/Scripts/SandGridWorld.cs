@@ -6,6 +6,8 @@ public class SandGridWorld : MonoBehaviour
 {
     public static SandGridWorld Instance { get; private set; }
 
+    public const float MAX_TRASH_HEIGHT = 2.4f;
+
     [Header("World Arrays (160x160)")]
     public float[] Heights;
     public float[] BaseHeights;
@@ -163,8 +165,8 @@ public class SandGridWorld : MonoBehaviour
                 }
 
                 TrashDensity[idx] = initialTrash;
-                // Surface height is base pavement + trash layer thickness (up to 0.65m)
-                Heights[idx] = baseGround + initialTrash * 0.65f;
+                // Surface height is base pavement + trash layer thickness (up to 2.4m mounds)
+                Heights[idx] = baseGround + initialTrash * MAX_TRASH_HEIGHT;
                 Grass[idx] = 0f;
                 OasisProtected[idx] = 0;
             }
@@ -1073,13 +1075,24 @@ public class SandGridWorld : MonoBehaviour
                     {
                         float actual = Mathf.Min(TrashDensity[idx], removeAmount);
                         TrashDensity[idx] -= actual;
-                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * 0.65f;
+                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * MAX_TRASH_HEIGHT;
                         totalRemoved += actual;
 
                         if (TrashDensity[idx] < 0.35f)
                         {
                             Grass[idx] = Mathf.Clamp01(Grass[idx] + actual * 0.45f);
                         }
+                        _dirty = true;
+                    }
+                }
+                else if (dist <= brushRadius * 1.35f)
+                {
+                    // Subtle displaced debris rim along the outer perimeter of the crater
+                    float rimT = Mathf.Sin((dist - brushRadius) / (brushRadius * 0.35f) * Mathf.PI);
+                    if (TrashDensity != null && TrashDensity[idx] > 0.15f && TrashDensity[idx] < 1.0f)
+                    {
+                        TrashDensity[idx] = Mathf.Min(1.0f, TrashDensity[idx] + rimT * 0.012f * dt);
+                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * MAX_TRASH_HEIGHT;
                         _dirty = true;
                     }
                 }
@@ -1093,7 +1106,7 @@ public class SandGridWorld : MonoBehaviour
     {
         Vector3 aimPoint = origin + forward * (range * 0.65f);
         aimPoint.y = GetHeight(aimPoint.x, aimPoint.z);
-        return VacuumAtPoint(aimPoint, origin, range * 0.45f, power, dt, null);
+        return VacuumAtPoint(aimPoint, origin, range * 0.50f, power, dt, null);
     }
 
     public float CleanCircle(Vector3 center, float radius, float amount)
@@ -1124,7 +1137,7 @@ public class SandGridWorld : MonoBehaviour
                     {
                         float actual = Mathf.Min(TrashDensity[idx], cellAmount);
                         TrashDensity[idx] -= actual;
-                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * 0.65f;
+                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * MAX_TRASH_HEIGHT;
                         totalRemoved += actual;
 
                         if (TrashDensity[idx] < 0.35f)
@@ -1168,7 +1181,7 @@ public class SandGridWorld : MonoBehaviour
                     if (TrashDensity != null && TrashDensity[idx] < 1f)
                     {
                         TrashDensity[idx] = Mathf.Min(1f, TrashDensity[idx] + add);
-                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * 0.65f;
+                        Heights[idx] = BaseHeights[idx] + TrashDensity[idx] * MAX_TRASH_HEIGHT;
                         Grass[idx] = Mathf.Max(0f, Grass[idx] - rate * 0.1f * dt);
                         _dirty = true;
                     }

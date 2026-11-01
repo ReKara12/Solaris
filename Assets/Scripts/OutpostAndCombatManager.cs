@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // SOLARIS RECLAIM v2.0 — OutpostAndCombatManager.cs
 // 12 Enemy Outposts (4 Smog Factories + 8 Toxic Scrap Mounds)
 // Smart Proximity Spawner (Cap 14, Despawn >90m, Storm Hunter)
@@ -81,6 +81,7 @@ public class OutpostAndCombatManager : MonoBehaviour
         public float animTimer = 0f;
         public Vector3 knockbackVelocity = Vector3.zero;
         public WorldHealthBar healthBar;
+        public float healthBarFadeTimer = 0f;
 
         // Visual animation pivots
         public Transform[] legPivots;
@@ -88,6 +89,14 @@ public class OutpostAndCombatManager : MonoBehaviour
         public Transform[] armPivots;
         public Transform[] energyRings;
         public Light coreLight;
+
+        // Hades-style telegraphed combat state machine
+        public enum AIState { Chase, Telegraph, Attacking, Stunned, Recovering }
+        public AIState state = AIState.Chase;
+        public float stateTimer = 0f;
+        public Vector3 chargeDirection = Vector3.forward;
+        public GameObject telegraphVisual;
+        public bool isKnockedByPiston = false;
     }
 
     public class ProjectileData
@@ -100,6 +109,11 @@ public class OutpostAndCombatManager : MonoBehaviour
         public float maxLifetime;
         public float radius;
         public bool isEnemy;
+        public bool isHeavyKnockback;
+        public bool isMortar;
+        public Vector3 mortarStart;
+        public Vector3 mortarTarget;
+        public GameObject dangerCircle;
     }
 
     public class WorldHealthBar
@@ -158,6 +172,7 @@ public class OutpostAndCombatManager : MonoBehaviour
     private Material _matEnemyBolt;
     private Material _matHealthBg;
     private Material _matHealthFg;
+    private Material _matTelegraphRed;
 
     // Outpost spawn coordinates
     private static readonly Vector3[] FACTORY_POSITIONS = new Vector3[]
@@ -268,7 +283,15 @@ public class OutpostAndCombatManager : MonoBehaviour
             var e = ActiveEnemies[i];
             if (!e.isDead && e.healthBar != null && e.healthBar.rootObj != null)
             {
-                UpdateHealthBarTransform(e.healthBar, e.position, camRot);
+                bool showBar = e.healthBarFadeTimer > 0f && e.hp < e.maxHp;
+                if (e.healthBar.rootObj.activeSelf != showBar)
+                {
+                    e.healthBar.rootObj.SetActive(showBar);
+                }
+                if (showBar)
+                {
+                    UpdateHealthBarTransform(e.healthBar, e.position, camRot);
+                }
             }
         }
     }
@@ -964,10 +987,29 @@ public class OutpostAndCombatManager : MonoBehaviour
             float speedMult = insideOasis ? 0.60f : 1.0f;
             float currentSpeed = e.speed * speedMult;
 
-            // Apply residual knockback velocity
+            // Apply residual knockback velocity & check wall slam
             if (e.knockbackVelocity.sqrMagnitude > 0.01f)
             {
+                Vector3 prevPos = e.position;
                 e.position += e.knockbackVelocity * dt;
+
+                if (e.isKnockedByPiston && _world != null)
+                {
+                    Vector3 resolved = _world.ResolveBuildingCollisions(e.position, e.radius);
+                    if (Vector3.Distance(resolved, e.position) > 0.15f)
+                    {
+                        // Wall-Slam occurred!
+                        e.position = resolved;
+                        e.knockbackVelocity = Vector3.zero;
+                        e.isKnockedByPiston = false;
+                        e.state = EnemyUnit.AIState.Stunned;
+                        e.stateTimer = 1.4f;
+                        DamageEnemy(e, 42f, (resolved - prevPos).normalized, isHeavy: true);
+                        CombatJuice.Instance?.EmitScrapSparks(e.position, -(e.position - prevPos).normalized, 22);
+                        SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+                    }
+                }
+
                 e.knockbackVelocity = Vector3.Lerp(e.knockbackVelocity, Vector3.zero, 8f * dt);
             }
 
@@ -975,28 +1017,118 @@ public class OutpostAndCombatManager : MonoBehaviour
             toPlayer.y = 0f;
             Vector3 moveDir = toPlayer.normalized;
 
-            // 1. Crawler AI (fast 6-legged scuttle + melee bite 8 dmg)
+            // 1. Crawler AI ("Scrap Charger" - Hades Bruiser with Telegraph Charge)
             if (e.type == "crawler")
             {
-                if (toPlayer.magnitude > 0.1f)
+                // Stunned State
+                if (e.state == EnemyUnit.AIState.Stunned)
                 {
-                    e.rootObj.transform.rotation = Quaternion.Slerp(e.rootObj.transform.rotation, Quaternion.LookRotation(moveDir), 12f * dt);
+                    e.stateTimer -= dt;
+                    if (e.rootObj != null)
+                    {
+                        e.rootObj.transform.localRotation = Quaternion.Euler(0, 0, Mathf.Sin(e.animTimer * 20f) * 14f);
+                    }
+                    if (e.stateTimer <= 0f)
+                    {
+                        e.state = EnemyUnit.AIState.Chase;
+                        e.attackTimer = 2.0f;
+                    }
                 }
+                // Telegraph State (Winding up & drawing ground line)
+                else if (e.state == EnemyUnit.AIState.Telegraph)
+                {
+                    e.stateTimer -= dt;
+                    if (toPlayer.magnitude > 0.1f)
+                    {
+                        e.chargeDirection = toPlayer.normalized;
+                        e.rootObj.transform.rotation = Quaternion.LookRotation(e.chargeDirection);
+                    }
 
-                if (distToPlayer > 2.0f)
-                {
-                    e.position += moveDir * currentSpeed * dt;
+                    // Vibrate body in anticipation
+                    if (e.torso != null)
+                    {
+                        e.torso.localPosition = new Vector3(Mathf.Sin(e.animTimer * 50f) * 0.08f, 0.4f, 0);
+                    }
+
+                    if (e.stateTimer <= 0f)
+                    {
+                        e.state = EnemyUnit.AIState.Attacking;
+                        e.stateTimer = 0.48f; // 0.48s rush
+                        if (e.telegraphVisual != null)
+                        {
+                            SolarisConfig.SafeDestroy(e.telegraphVisual);
+                            e.telegraphVisual = null;
+                        }
+                    }
                 }
+                // Attacking State (High-Speed Dash Rush)
+                else if (e.state == EnemyUnit.AIState.Attacking)
+                {
+                    e.stateTimer -= dt;
+                    e.position += e.chargeDirection * (currentSpeed * 3.4f) * dt;
+
+                    // Hit player?
+                    if (distToPlayer <= 2.2f)
+                    {
+                        _player?.TakeDamage(18f);
+                        CombatJuice.Instance?.AddCameraTrauma(0.35f);
+                        e.state = EnemyUnit.AIState.Chase;
+                        e.attackTimer = 2.4f;
+                    }
+
+                    // Hit obstacle / building wall?
+                    if (_world != null)
+                    {
+                        Vector3 resolved = _world.ResolveBuildingCollisions(e.position, e.radius);
+                        if (Vector3.Distance(resolved, e.position) > 0.12f)
+                        {
+                            // Stun from missing dash and hitting wall!
+                            e.position = resolved;
+                            e.state = EnemyUnit.AIState.Stunned;
+                            e.stateTimer = 1.5f;
+                            DamageEnemy(e, 25f, -e.chargeDirection, isHeavy: true);
+                            CombatJuice.Instance?.EmitScrapSparks(e.position, -e.chargeDirection, 20);
+                            SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+                        }
+                    }
+
+                    if (e.stateTimer <= 0f)
+                    {
+                        e.state = EnemyUnit.AIState.Chase;
+                        e.attackTimer = 2.2f;
+                    }
+                }
+                // Chase State
                 else
                 {
-                    // Melee bite every 1.0s for 8f damage
-                    e.attackTimer += dt;
-                    if (e.attackTimer >= 1.0f)
+                    if (e.attackTimer > 0f) e.attackTimer -= dt;
+
+                    if (toPlayer.magnitude > 0.1f)
                     {
-                        e.attackTimer = 0f;
-                        if (_player != null)
+                        e.rootObj.transform.rotation = Quaternion.Slerp(e.rootObj.transform.rotation, Quaternion.LookRotation(moveDir), 12f * dt);
+                    }
+
+                    // Trigger Telegraph when in sweet charge range (4m to 14m)
+                    if (distToPlayer <= 14f && distToPlayer >= 3.8f && e.attackTimer <= 0f)
+                    {
+                        e.state = EnemyUnit.AIState.Telegraph;
+                        e.stateTimer = 0.72f;
+                        e.chargeDirection = moveDir;
+                        if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
+                        e.telegraphVisual = CreateTelegraphLine(e.position, e.position + e.chargeDirection * 15f, 0.40f);
+                    }
+                    else if (distToPlayer > 2.0f)
+                    {
+                        e.position += moveDir * currentSpeed * dt;
+                    }
+                    else
+                    {
+                        // Melee bite
+                        e.attackTimer += dt;
+                        if (e.attackTimer >= 1.0f)
                         {
-                            _player.TakeDamage(8f);
+                            e.attackTimer = 0f;
+                            _player?.TakeDamage(8f);
                             SolarisGameManager.Instance?.PlaySfx("enemy_hit");
                         }
                     }
@@ -1006,48 +1138,90 @@ public class OutpostAndCombatManager : MonoBehaviour
                 if (_world != null) e.position.y = _world.GetHeight(e.position.x, e.position.z);
                 e.rootObj.transform.position = e.position;
 
-                // Animate 6 scuttling legs with alternate tripod gait
+                // Animate 6 scuttling legs with dynamic gait speed
                 if (e.legPivots != null)
                 {
+                    float legSpeed = e.state == EnemyUnit.AIState.Attacking ? 32f : 15f;
                     for (int l = 0; l < e.legPivots.Length; l++)
                     {
                         if (e.legPivots[l] == null) continue;
                         float phase = (l % 2 == 0) ? 0f : Mathf.PI;
-                        float swing = Mathf.Sin(e.animTimer * 15f + phase) * 24f;
-                        float lift = Mathf.Cos(e.animTimer * 15f + phase) * 14f;
+                        float swing = Mathf.Sin(e.animTimer * legSpeed + phase) * 26f;
+                        float lift = Mathf.Cos(e.animTimer * legSpeed + phase) * 15f;
                         e.legPivots[l].localRotation = Quaternion.Euler(swing, lift, 0f);
                     }
                 }
             }
-            // 2. Golem AI (heavy industrial walker mech + ground slam 16 dmg + sand spill)
+            // 2. Golem AI ("Smog Bloater" - Area Denial with Vacuum Deflation Counterplay)
             else if (e.type == "golem")
             {
-                if (toPlayer.magnitude > 0.1f)
+                if (toPlayer.magnitude > 0.1f && e.state != EnemyUnit.AIState.Telegraph)
                 {
                     e.rootObj.transform.rotation = Quaternion.Slerp(e.rootObj.transform.rotation, Quaternion.LookRotation(moveDir), 5f * dt);
                 }
 
-                if (distToPlayer > 3.6f)
+                // Telegraph Detonation Countdown State
+                if (e.state == EnemyUnit.AIState.Telegraph)
                 {
-                    e.position += moveDir * currentSpeed * dt;
-                }
-                else
-                {
-                    // Ground slam every 2.2s for 16f damage + re-contaminate sand
-                    e.attackTimer += dt;
-                    if (e.attackTimer >= 2.2f)
+                    e.stateTimer -= dt;
+
+                    // Torso expands and pulses violently
+                    if (e.torso != null)
                     {
-                        e.attackTimer = 0f;
-                        if (_player != null)
+                        float pulse = 1.0f + Mathf.Abs(Mathf.Sin(e.animTimer * 18f)) * 0.45f;
+                        e.torso.localScale = new Vector3(pulse, pulse, pulse);
+                    }
+
+                    // Vacuum Counterplay: player can suck the toxic gas to defuse explosion!
+                    if (_player != null && _player.IsVacuuming && distToPlayer <= _player.vacuumRange)
+                    {
+                        Vector3 toEnemy = (e.position - _player.transform.position).normalized;
+                        if (Vector3.Dot(_player.transform.forward, toEnemy) > 0.60f)
                         {
-                            _player.TakeDamage(16f);
-                            SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+                            DamageEnemy(e, 45f * dt, -toEnemy, isHeavy: false);
+                            _player.DustTank = Mathf.Min(_player.DustTankMax, _player.DustTank + 30f * dt);
+                            if (e.isDead || e.hp <= 0f)
+                            {
+                                if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Fuse expired: Detonate!
+                    if (e.stateTimer <= 0f)
+                    {
+                        if (distToPlayer <= 5.8f)
+                        {
+                            _player?.TakeDamage(25f);
                         }
                         if (_world != null)
                         {
-                            _world.RecontaminateCircle(e.position, 5.5f, 0.45f, 1f);
+                            _world.RecontaminateCircle(e.position, 5.8f, 0.45f, 1f);
                         }
-                        SpawnShockwaveVisual(e.position, 5.5f, new Color(0.2f, 0.85f, 0.3f, 0.8f), 0.45f);
+                        CombatJuice.Instance?.EmitToxicSplatter(e.position, 32);
+                        CombatJuice.Instance?.AddCameraTrauma(0.45f);
+                        SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+
+                        if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
+                        KillEnemy(e, false);
+                        continue;
+                    }
+                }
+                // Chase State
+                else
+                {
+                    // Trigger Detonation Telegraph if near player or critically wounded (< 35% HP)
+                    if (distToPlayer <= 4.2f || (e.hp <= e.maxHp * 0.35f && distToPlayer <= 8.5f))
+                    {
+                        e.state = EnemyUnit.AIState.Telegraph;
+                        e.stateTimer = 1.15f;
+                        if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
+                        e.telegraphVisual = CreateTelegraphCircle(e.position, 5.5f);
+                    }
+                    else if (distToPlayer > 3.6f)
+                    {
+                        e.position += moveDir * currentSpeed * dt;
                     }
                 }
 
@@ -1055,18 +1229,14 @@ public class OutpostAndCombatManager : MonoBehaviour
                 if (_world != null) e.position.y = _world.GetHeight(e.position.x, e.position.z);
                 e.rootObj.transform.position = e.position;
 
-                // Heavy walker animation (legs swing & torso bobs)
-                if (e.legPivots != null && e.legPivots.Length >= 2)
+                // Heavy walker animation
+                if (e.legPivots != null && e.legPivots.Length >= 2 && e.state != EnemyUnit.AIState.Telegraph)
                 {
                     if (e.legPivots[0] != null) e.legPivots[0].localRotation = Quaternion.Euler(Mathf.Sin(e.animTimer * 4.5f) * 26f, 0, 0);
                     if (e.legPivots[1] != null) e.legPivots[1].localRotation = Quaternion.Euler(-Mathf.Sin(e.animTimer * 4.5f) * 26f, 0, 0);
                 }
-                if (e.torso != null)
-                {
-                    e.torso.localPosition = new Vector3(0f, 2.0f + Mathf.Abs(Mathf.Sin(e.animTimer * 9f)) * 0.22f, 0f);
-                }
             }
-            // 3. Wraith AI (floating crimson cyclone hunter + 10 dmg bolts from 12m)
+            // 3. Wraith AI ("Slag Mortar Drone" - Artillery with Lobbed Mortar Shell)
             else if (e.type == "wraith")
             {
                 // Hover 2.2m above ground plane with smooth oscillation
@@ -1074,13 +1244,13 @@ public class OutpostAndCombatManager : MonoBehaviour
                 e.position.y = groundY + 2.2f + Mathf.Sin(e.animTimer * 3.2f) * 0.35f;
 
                 // Standoff distance around ~12m from player
-                if (distToPlayer > 13.5f)
+                if (distToPlayer > 15f)
                 {
                     e.position += moveDir * currentSpeed * dt;
                 }
-                else if (distToPlayer < 9.5f)
+                else if (distToPlayer < 9.0f)
                 {
-                    e.position -= moveDir * (currentSpeed * 0.8f) * dt;
+                    e.position -= moveDir * (currentSpeed * 0.85f) * dt;
                 }
                 else
                 {
@@ -1095,7 +1265,7 @@ public class OutpostAndCombatManager : MonoBehaviour
                     e.rootObj.transform.rotation = Quaternion.Slerp(e.rootObj.transform.rotation, Quaternion.LookRotation(moveDir), 8f * dt);
                 }
 
-                // Rotate 3 crimson energy rings
+                // Rotate crimson energy rings
                 if (e.energyRings != null)
                 {
                     if (e.energyRings.Length > 0 && e.energyRings[0] != null) e.energyRings[0].Rotate(Vector3.up, 180f * dt);
@@ -1103,13 +1273,13 @@ public class OutpostAndCombatManager : MonoBehaviour
                     if (e.energyRings.Length > 2 && e.energyRings[2] != null) e.energyRings[2].Rotate(Vector3.right, 300f * dt);
                 }
 
-                // Fire red energy bolts for 10f dmg every 2.5s from ~12m
+                // Fire lobbed toxic mortar with 1.25s ground danger circle
                 e.attackTimer += dt;
-                if (e.attackTimer >= 2.5f && distToPlayer <= 16f)
+                if (e.attackTimer >= 3.0f && distToPlayer <= 22f)
                 {
                     e.attackTimer = 0f;
-                    Vector3 boltDir = (playerPos + Vector3.up * 1.0f - e.position).normalized;
-                    SpawnEnemyBolt(e.position, boltDir, 10f);
+                    SpawnEnemyMortar(e.position, playerPos, 14f);
+                    SolarisGameManager.Instance?.PlaySfx("sandstorm_wind");
                 }
             }
         }
@@ -1117,10 +1287,19 @@ public class OutpostAndCombatManager : MonoBehaviour
 
     private void DespawnEnemy(EnemyUnit enemy)
     {
+        if (enemy.telegraphVisual != null)
+        {
+            SolarisConfig.SafeDestroy(enemy.telegraphVisual);
+            enemy.telegraphVisual = null;
+        }
         if (enemy.sourceOutpost != null)
         {
             if (enemy.type == "crawler") enemy.sourceOutpost.activeCrawlers = Mathf.Max(0, enemy.sourceOutpost.activeCrawlers - 1);
             else if (enemy.type == "golem") enemy.sourceOutpost.activeGolems = Mathf.Max(0, enemy.sourceOutpost.activeGolems - 1);
+        }
+        if (enemy.healthBar != null && enemy.healthBar.rootObj != null)
+        {
+            SolarisConfig.SafeDestroy(enemy.healthBar.rootObj);
         }
         if (enemy.rootObj != null)
         {
@@ -1399,23 +1578,43 @@ public class OutpostAndCombatManager : MonoBehaviour
     // ============================================================
     // 7. Damage, Destruction & Health Bar Handling
     // ============================================================
-    public void DamageEnemy(EnemyUnit enemy, float dmg)
+    public void DamageEnemy(EnemyUnit enemy, float dmg, Vector3? impactDir = null, bool isHeavy = false)
     {
         if (enemy.isDead) return;
 
         enemy.hp -= dmg;
+        enemy.healthBarFadeTimer = 1.6f;
         UpdateHealthBarFill(enemy.healthBar, enemy.hp, enemy.maxHp);
+
+        Vector3 dir = impactDir ?? (enemy.position - (_player != null ? _player.transform.position : Vector3.zero)).normalized;
+        CombatJuice.Instance?.ApplyHitFeedback(enemy.rootObj != null ? enemy.rootObj.transform : null, enemy.position, dir, isHeavy);
 
         if (enemy.hp <= 0f)
         {
-            KillEnemy(enemy, shred: false);
+            KillEnemy(enemy, shred: false, impactDir: dir);
         }
     }
 
-    private void KillEnemy(EnemyUnit enemy, bool shred)
+    private void KillEnemy(EnemyUnit enemy, bool shred, Vector3? impactDir = null)
     {
         enemy.isDead = true;
         enemy.hp = 0f;
+
+        if (enemy.telegraphVisual != null)
+        {
+            SolarisConfig.SafeDestroy(enemy.telegraphVisual);
+            enemy.telegraphVisual = null;
+        }
+
+        Vector3 dir = impactDir ?? Vector3.up;
+        CombatJuice.Instance?.EmitScrapSparks(enemy.position, dir, 22);
+        CombatJuice.Instance?.EmitGlassShards(enemy.position, dir, 18);
+        if (enemy.type == "golem") CombatJuice.Instance?.EmitToxicSplatter(enemy.position, 24);
+        CombatJuice.Instance?.AddCameraTrauma(enemy.type == "golem" ? 0.42f : 0.22f);
+        CombatJuice.Instance?.TriggerHitstop(0.06f);
+
+        // Replenish ammo to RecycledWeaponSystem
+        RecycledWeaponSystem.Instance?.ReplenishFromTrash(enemy.type == "golem" ? 14f : 6f);
 
         // Silica drop rewards
         int silicaReward = 0;
@@ -1434,7 +1633,6 @@ public class OutpostAndCombatManager : MonoBehaviour
             else if (enemy.type == "golem") enemy.sourceOutpost.activeGolems = Mathf.Max(0, enemy.sourceOutpost.activeGolems - 1);
         }
 
-        SpawnHitSparks(enemy.position, enemy.type == "wraith" ? Color.red : Color.yellow);
         SolarisGameManager.Instance?.PlaySfx("enemy_hit");
 
         if (enemy.healthBar != null && enemy.healthBar.rootObj != null)
@@ -1574,8 +1772,36 @@ public class OutpostAndCombatManager : MonoBehaviour
 
             if (p.lifetime >= p.maxLifetime || p.rootObj == null)
             {
+                if (p.dangerCircle != null) SolarisConfig.SafeDestroy(p.dangerCircle);
                 if (p.rootObj != null) SolarisConfig.SafeDestroy(p.rootObj);
                 _projectiles.RemoveAt(i);
+                continue;
+            }
+
+            // Lobbed mortar projectile handling
+            if (p.isMortar)
+            {
+                float t = Mathf.Clamp01(p.lifetime / p.maxLifetime);
+                Vector3 current = Vector3.Lerp(p.mortarStart, p.mortarTarget, t);
+                current.y += Mathf.Sin(t * Mathf.PI) * 11f;
+                p.position = current;
+                if (p.rootObj != null) p.rootObj.transform.position = p.position;
+
+                if (t >= 1f)
+                {
+                    if (_player != null && Vector3.Distance(p.mortarTarget, _player.transform.position) <= 3.4f)
+                    {
+                        _player.TakeDamage(p.damage);
+                    }
+                    CombatJuice.Instance?.EmitToxicSplatter(p.mortarTarget, 22);
+                    CombatJuice.Instance?.AddCameraTrauma(0.28f);
+                    SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+
+                    if (p.dangerCircle != null) SolarisConfig.SafeDestroy(p.dangerCircle);
+                    if (p.rootObj != null) SolarisConfig.SafeDestroy(p.rootObj);
+                    _projectiles.RemoveAt(i);
+                    continue;
+                }
                 continue;
             }
 
@@ -1593,9 +1819,18 @@ public class OutpostAndCombatManager : MonoBehaviour
                     if (enemy.isDead) continue;
                     if (Vector3.Distance(nextPos, enemy.position) <= (p.radius + enemy.radius))
                     {
-                        DamageEnemy(enemy, p.damage);
-                        SpawnHitSparks(nextPos, Color.cyan);
-                        SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+                        Vector3 impactDir = p.velocity.normalized;
+                        if (p.isHeavyKnockback)
+                        {
+                            enemy.isKnockedByPiston = true;
+                            enemy.knockbackVelocity += impactDir * 28f;
+                        }
+                        else
+                        {
+                            enemy.knockbackVelocity += impactDir * 12f;
+                        }
+
+                        DamageEnemy(enemy, p.damage, impactDir, p.isHeavyKnockback);
                         hit = true;
                         break;
                     }
@@ -1889,5 +2124,97 @@ public class OutpostAndCombatManager : MonoBehaviour
 
         _matHealthFg = new Material(unlitShader);
         _matHealthFg.color = new Color(0.2f, 0.9f, 0.4f, 0.95f);
+
+        _matTelegraphRed = SolarisConfig.CreateMaterial(new Color(1f, 0.15f, 0.15f, 0.85f), 0f, 0.9f, null, new Color(1f, 0.15f, 0.15f) * 2.8f);
+    }
+
+    public void RegisterExternalProjectile(ProjectileData p, bool isHeavyKnockback = false)
+    {
+        p.isHeavyKnockback = isHeavyKnockback;
+        _projectiles.Add(p);
+    }
+
+    public void OnVentBlast(Vector3 origin, Vector3 forward, float range, float damage)
+    {
+        for (int i = ActiveEnemies.Count - 1; i >= 0; i--)
+        {
+            var e = ActiveEnemies[i];
+            if (e.isDead) continue;
+            Vector3 toEnemy = e.position - origin;
+            float dist = toEnemy.magnitude;
+            if (dist <= range)
+            {
+                float dot = Vector3.Dot(forward, toEnemy.normalized);
+                if (dot > 0.45f) // Wide forward cone
+                {
+                    Vector3 knockDir = (toEnemy.normalized + Vector3.up * 0.15f).normalized;
+                    e.knockbackVelocity += knockDir * 24f;
+                    DamageEnemy(e, damage, knockDir, isHeavy: true);
+                }
+            }
+        }
+    }
+
+    public GameObject CreateTelegraphLine(Vector3 start, Vector3 end, float width = 0.35f)
+    {
+        GameObject go = new GameObject("TelegraphLine");
+        LineRenderer lr = go.AddComponent<LineRenderer>();
+        lr.useWorldSpace = true;
+        lr.positionCount = 2;
+        lr.SetPosition(0, start + Vector3.up * 0.12f);
+        lr.SetPosition(1, end + Vector3.up * 0.12f);
+        lr.startWidth = width;
+        lr.endWidth = width;
+        if (_matTelegraphRed != null) lr.sharedMaterial = _matTelegraphRed;
+        return go;
+    }
+
+    public GameObject CreateTelegraphCircle(Vector3 center, float radius)
+    {
+        GameObject go = new GameObject("TelegraphCircle");
+        go.transform.position = center + Vector3.up * 0.12f;
+        LineRenderer lr = go.AddComponent<LineRenderer>();
+        lr.useWorldSpace = false;
+        lr.loop = true;
+        int segments = 32;
+        lr.positionCount = segments;
+        for (int i = 0; i < segments; i++)
+        {
+            float rad = (i / (float)segments) * Mathf.PI * 2f;
+            lr.SetPosition(i, new Vector3(Mathf.Cos(rad) * radius, 0f, Mathf.Sin(rad) * radius));
+        }
+        lr.startWidth = 0.28f;
+        lr.endWidth = 0.28f;
+        if (_matTelegraphRed != null) lr.sharedMaterial = _matTelegraphRed;
+        return go;
+    }
+
+    public void SpawnEnemyMortar(Vector3 startPos, Vector3 targetPos, float damage)
+    {
+        GameObject circle = CreateTelegraphCircle(targetPos, 3.4f);
+
+        GameObject bolt = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        bolt.name = "WraithMortar";
+        bolt.transform.position = startPos;
+        bolt.transform.localScale = new Vector3(0.65f, 0.65f, 0.65f);
+        bolt.GetComponent<Renderer>().sharedMaterial = _matToxicSludge;
+        SolarisConfig.SafeDestroy(bolt.GetComponent<Collider>());
+
+        ProjectileData p = new ProjectileData
+        {
+            rootObj = bolt,
+            position = startPos,
+            mortarStart = startPos,
+            mortarTarget = targetPos,
+            velocity = Vector3.zero,
+            damage = damage,
+            lifetime = 0f,
+            maxLifetime = 1.25f,
+            radius = 0.75f,
+            isEnemy = true,
+            isMortar = true,
+            dangerCircle = circle
+        };
+        _projectiles.Add(p);
     }
 }
