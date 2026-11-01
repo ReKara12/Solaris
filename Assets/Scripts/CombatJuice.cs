@@ -100,8 +100,11 @@ public class CombatJuice : MonoBehaviour
     }
 
     public Vector3 GetShakeOffset() => _currentShakeOffset + _directionalCameraKick;
+    public Vector3 GetRecoilKickOffset() => _directionalCameraKick;
     public Quaternion GetShakeRotation() => _currentShakeRotation;
     public float GetFovDelta() => _fovDelta;
+
+    public void EmitMuzzleSparks(Vector3 pos, Vector3 forward, int count) => EmitScrapSparks(pos, forward, count);
 
     /// <summary>
     /// Adds trauma (0..1) to the camera shake system.
@@ -134,8 +137,9 @@ public class CombatJuice : MonoBehaviour
     /// <summary>
     /// Spawns an expanding seismic ground ripple wave that tears through dust and knocks back entities.
     /// </summary>
-    public void SpawnGroundRippleWave(Vector3 center, float maxRadius, float speed, Color color)
+    public void SpawnGroundRippleWave(Vector3 center, float maxRadius, float speed, Color color = default)
     {
+        if (color == default || color.a <= 0.001f) color = new Color(0.2f, 0.95f, 1f, 0.85f);
         StartCoroutine(GroundRippleRoutine(center, maxRadius, speed, color));
     }
 
@@ -235,6 +239,16 @@ public class CombatJuice : MonoBehaviour
         yield return new WaitForSecondsRealtime(duration);
         Time.timeScale = originalScale;
         _isHitstopping = false;
+    }
+
+    /// <summary>
+    /// Flashes all renderers on the target with emission without triggering camera shake or hitstop.
+    /// Perfect for DoT ticks (e.g. slag puddle burn).
+    /// </summary>
+    public void TriggerDamageFlash(Transform target, Color? flashColor = null)
+    {
+        if (target == null) return;
+        StartCoroutine(DamageFlashRoutine(target, flashColor ?? Color.white));
     }
 
     /// <summary>

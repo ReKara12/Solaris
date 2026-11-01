@@ -330,6 +330,40 @@ namespace AutonomousStudio.EditorBridge
                     return "{\"ok\":true,\"captured\":true}";
                 });
             }
+            else if (path == "/open_workshop")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var ui = UnityEngine.Object.FindFirstObjectByType<SolarisUIManager>();
+                    if (ui == null) return "{\"ok\":false,\"error\":\"No UI\"}";
+                    ui.SetWorkshopVisible(true);
+                    return "{\"ok\":true,\"workshopOpen\":true}";
+                });
+            }
+            else if (path == "/open_arsenal_tab")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var ui = UnityEngine.Object.FindFirstObjectByType<SolarisUIManager>();
+                    if (ui == null) return "{\"ok\":false,\"error\":\"No UI\"}";
+                    ui.SetWorkshopVisible(true);
+                    var method = typeof(SolarisUIManager).GetMethod("SelectWorkshopTab", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (method != null) method.Invoke(ui, new object[] { 1 });
+                    return "{\"ok\":true,\"arsenalOpen\":true}";
+                });
+            }
+            else if (path == "/open_upgrades_tab")
+            {
+                responseJson = RunOnMainThread(() =>
+                {
+                    var ui = UnityEngine.Object.FindFirstObjectByType<SolarisUIManager>();
+                    if (ui == null) return "{\"ok\":false,\"error\":\"No UI\"}";
+                    ui.SetWorkshopVisible(true);
+                    var method = typeof(SolarisUIManager).GetMethod("SelectWorkshopTab", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (method != null) method.Invoke(ui, new object[] { 0 });
+                    return "{\"ok\":true,\"upgradesOpen\":true}";
+                });
+            }
             else if (path == "/vacuum_test")
             {
                 responseJson = RunOnMainThread(() =>

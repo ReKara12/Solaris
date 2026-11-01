@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // SOLARIS RECLAIM v2.0 — OutpostAndCombatManager.cs
 // 12 Enemy Outposts (4 Smog Factories + 8 Toxic Scrap Mounds)
 // Smart Proximity Spawner (Cap 14, Despawn >90m, Storm Hunter)
@@ -97,6 +97,25 @@ public class OutpostAndCombatManager : MonoBehaviour
         public Vector3 chargeDirection = Vector3.forward;
         public GameObject telegraphVisual;
         public bool isKnockedByPiston = false;
+        public bool hasDoubleDashed = false;
+        public float stompTimer = 0f;
+
+        // Combat i-Frames & feedback throttling
+        public float iFrameTimer = 0f;
+        public int lastDamageFrame = -1;
+        public int lastFeedbackFrame = -1;
+    }
+
+    public class SlagPuddle
+    {
+        public GameObject rootObj;
+        public Vector3 position;
+        public float radius;
+        public float lifetime;
+        public float maxLifetime;
+        public float dps;
+        public float tickTimer = 0f;
+        public const float TICK_INTERVAL = 0.25f; // Ticks 4 times per second
     }
 
     public class ProjectileData
@@ -153,6 +172,7 @@ public class OutpostAndCombatManager : MonoBehaviour
     private EcoReclaimerPlayer _player;
 
     private readonly List<ProjectileData> _projectiles = new List<ProjectileData>();
+    private readonly List<SlagPuddle> _slagPuddles = new List<SlagPuddle>();
     private readonly List<LaserBeamData> _laserBeams = new List<LaserBeamData>();
     private readonly List<ShockwaveVisualData> _shockwaves = new List<ShockwaveVisualData>();
 
@@ -238,8 +258,9 @@ public class OutpostAndCombatManager : MonoBehaviour
         // 2. Update Active Enemies (AI, movement, attacks, procedural animation, despawn)
         UpdateEnemies(dt, playerPos);
 
-        // 3. Update Projectiles
+        // 3. Update Projectiles & Slag Puddles
         UpdateProjectiles(dt);
+        UpdateSlagPuddles(dt);
 
         // 4. Update Laser Beams
         UpdateLaserBeams(dt);
@@ -981,6 +1002,7 @@ public class OutpostAndCombatManager : MonoBehaviour
             }
 
             e.animTimer += dt;
+            if (e.iFrameTimer > 0f) e.iFrameTimer -= dt;
 
             // Oasis Slow Effect: 40% slower inside Oasis
             bool insideOasis = (_world != null && _world.IsInOasis(e.position));
@@ -998,13 +1020,13 @@ public class OutpostAndCombatManager : MonoBehaviour
                     Vector3 resolved = _world.ResolveBuildingCollisions(e.position, e.radius);
                     if (Vector3.Distance(resolved, e.position) > 0.15f)
                     {
-                        // Wall-Slam occurred!
+                        // Wall-Slam occurred! (-60% Nerfed damage)
                         e.position = resolved;
                         e.knockbackVelocity = Vector3.zero;
                         e.isKnockedByPiston = false;
                         e.state = EnemyUnit.AIState.Stunned;
                         e.stateTimer = 1.4f;
-                        DamageEnemy(e, 42f, (resolved - prevPos).normalized, isHeavy: true);
+                        DamageEnemy(e, 17f, (resolved - prevPos).normalized, isHeavy: true);
                         CombatJuice.Instance?.EmitScrapSparks(e.position, -(e.position - prevPos).normalized, 22);
                         SolarisGameManager.Instance?.PlaySfx("outpost_explode");
                     }
@@ -1070,10 +1092,13 @@ public class OutpostAndCombatManager : MonoBehaviour
                     // Hit player?
                     if (distToPlayer <= 2.2f)
                     {
-                        _player?.TakeDamage(18f);
-                        CombatJuice.Instance?.AddCameraTrauma(0.35f);
+                        if (_player != null && _player.TakeDamage(18f))
+                        {
+                            CombatJuice.Instance?.SpawnGroundRippleWave(e.position, 5.5f, 16f);
+                        }
                         e.state = EnemyUnit.AIState.Chase;
                         e.attackTimer = 2.4f;
+                        e.hasDoubleDashed = false;
                     }
 
                     // Hit obstacle / building wall?
@@ -1082,26 +1107,46 @@ public class OutpostAndCombatManager : MonoBehaviour
                         Vector3 resolved = _world.ResolveBuildingCollisions(e.position, e.radius);
                         if (Vector3.Distance(resolved, e.position) > 0.12f)
                         {
-                            // Stun from missing dash and hitting wall!
+                            // Stun from missing dash and hitting wall! (-60% Nerfed damage)
                             e.position = resolved;
                             e.state = EnemyUnit.AIState.Stunned;
                             e.stateTimer = 1.5f;
-                            DamageEnemy(e, 25f, -e.chargeDirection, isHeavy: true);
+                            DamageEnemy(e, 10f, -e.chargeDirection, isHeavy: true);
                             CombatJuice.Instance?.EmitScrapSparks(e.position, -e.chargeDirection, 20);
+                            CombatJuice.Instance?.SpawnGroundRippleWave(e.position, 6.0f, 18f);
                             SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+                            e.hasDoubleDashed = false;
                         }
                     }
 
                     if (e.stateTimer <= 0f)
                     {
-                        e.state = EnemyUnit.AIState.Chase;
-                        e.attackTimer = 2.2f;
+                        CombatJuice.Instance?.SpawnGroundRippleWave(e.position, 5.0f, 15f);
+
+                        // Enraged Phase: Double Dash if HP < 55%
+                        if (e.hp < e.maxHp * 0.55f && !e.hasDoubleDashed)
+                        {
+                            e.hasDoubleDashed = true;
+                            e.state = EnemyUnit.AIState.Telegraph;
+                            e.stateTimer = 0.28f; // Fast redirect telegraph
+                            e.chargeDirection = toPlayer.normalized;
+                            if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
+                            e.telegraphVisual = CreateTelegraphLine(e.position, e.position + e.chargeDirection * 14f, 0.35f);
+                            SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+                        }
+                        else
+                        {
+                            e.state = EnemyUnit.AIState.Chase;
+                            e.attackTimer = 2.2f;
+                            e.hasDoubleDashed = false;
+                        }
                     }
                 }
                 // Chase State
                 else
                 {
                     if (e.attackTimer > 0f) e.attackTimer -= dt;
+                    else e.hasDoubleDashed = false;
 
                     if (toPlayer.magnitude > 0.1f)
                     {
@@ -1178,7 +1223,7 @@ public class OutpostAndCombatManager : MonoBehaviour
                         Vector3 toEnemy = (e.position - _player.transform.position).normalized;
                         if (Vector3.Dot(_player.transform.forward, toEnemy) > 0.60f)
                         {
-                            DamageEnemy(e, 45f * dt, -toEnemy, isHeavy: false);
+                            DamageEnemy(e, 18f * dt, -toEnemy, isHeavy: false, isDot: true);
                             _player.DustTank = Mathf.Min(_player.DustTankMax, _player.DustTank + 30f * dt);
                             if (e.isDead || e.hp <= 0f)
                             {
@@ -1200,8 +1245,12 @@ public class OutpostAndCombatManager : MonoBehaviour
                             _world.RecontaminateCircle(e.position, 5.8f, 0.45f, 1f);
                         }
                         CombatJuice.Instance?.EmitToxicSplatter(e.position, 32);
+                        CombatJuice.Instance?.SpawnGroundRippleWave(e.position, 6.5f, 18f);
                         CombatJuice.Instance?.AddCameraTrauma(0.45f);
                         SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+
+                        // 6-way cluster shrapnel starburst
+                        SpawnEnemyShrapnelCluster(e.position, 6, 14f);
 
                         if (e.telegraphVisual != null) SolarisConfig.SafeDestroy(e.telegraphVisual);
                         KillEnemy(e, false);
@@ -1222,6 +1271,16 @@ public class OutpostAndCombatManager : MonoBehaviour
                     else if (distToPlayer > 3.6f)
                     {
                         e.position += moveDir * currentSpeed * dt;
+
+                        // Periodic Foot Stomp Tremor & Ground Ripple Wave
+                        e.stompTimer += dt;
+                        if (e.stompTimer >= 3.6f)
+                        {
+                            e.stompTimer = 0f;
+                            CombatJuice.Instance?.SpawnGroundRippleWave(e.position, 4.5f, 13f);
+                            CombatJuice.Instance?.AddCameraTrauma(0.15f);
+                            SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+                        }
                     }
                 }
 
@@ -1273,12 +1332,15 @@ public class OutpostAndCombatManager : MonoBehaviour
                     if (e.energyRings.Length > 2 && e.energyRings[2] != null) e.energyRings[2].Rotate(Vector3.right, 300f * dt);
                 }
 
-                // Fire lobbed toxic mortar with 1.25s ground danger circle
+                // Fire lobbed toxic mortar triple cluster barrage
                 e.attackTimer += dt;
-                if (e.attackTimer >= 3.0f && distToPlayer <= 22f)
+                if (e.attackTimer >= 3.2f && distToPlayer <= 24f)
                 {
                     e.attackTimer = 0f;
                     SpawnEnemyMortar(e.position, playerPos, 14f);
+                    Vector3 rightOffset = Vector3.Cross(moveDir, Vector3.up) * 4.2f;
+                    SpawnEnemyMortar(e.position, playerPos + rightOffset, 14f);
+                    SpawnEnemyMortar(e.position, playerPos - rightOffset, 14f);
                     SolarisGameManager.Instance?.PlaySfx("sandstorm_wind");
                 }
             }
@@ -1578,16 +1640,52 @@ public class OutpostAndCombatManager : MonoBehaviour
     // ============================================================
     // 7. Damage, Destruction & Health Bar Handling
     // ============================================================
-    public void DamageEnemy(EnemyUnit enemy, float dmg, Vector3? impactDir = null, bool isHeavy = false)
+    public void DamageEnemy(EnemyUnit enemy, float dmg, Vector3? impactDir = null, bool isHeavy = false, bool isDot = false)
     {
         if (enemy.isDead) return;
+
+        if (isDot)
+        {
+            // DoT damage (e.g. Slag Puddle burn, vacuum defuse):
+            // Subtle burn flash without triggering hitstop micro-freezes or screen trauma loops!
+            enemy.hp -= dmg;
+            enemy.healthBarFadeTimer = 1.6f;
+            UpdateHealthBarFill(enemy.healthBar, enemy.hp, enemy.maxHp);
+
+            if (enemy.rootObj != null)
+            {
+                CombatJuice.Instance?.TriggerDamageFlash(enemy.rootObj.transform, new Color(1f, 0.45f, 0.1f, 1f));
+            }
+
+            if (enemy.hp <= 0f)
+            {
+                KillEnemy(enemy, shred: false, impactDir: Vector3.up);
+            }
+            return;
+        }
+
+        // Direct damage (projectiles, harpoon, mortar):
+        // i-Frame damage cooldown: Ignore if still inside i-frame from a previous frame
+        if (enemy.iFrameTimer > 0f && enemy.lastDamageFrame != Time.frameCount)
+        {
+            return;
+        }
+
+        enemy.lastDamageFrame = Time.frameCount;
+        enemy.iFrameTimer = 0.12f; // 120ms invulnerability window against repeated hits
 
         enemy.hp -= dmg;
         enemy.healthBarFadeTimer = 1.6f;
         UpdateHealthBarFill(enemy.healthBar, enemy.hp, enemy.maxHp);
 
         Vector3 dir = impactDir ?? (enemy.position - (_player != null ? _player.transform.position : Vector3.zero)).normalized;
-        CombatJuice.Instance?.ApplyHitFeedback(enemy.rootObj != null ? enemy.rootObj.transform : null, enemy.position, dir, isHeavy);
+
+        // Apply screen shake & hitstop only once per frame per enemy (prevents multi-pellet shotgun trauma stacking)
+        if (enemy.lastFeedbackFrame != Time.frameCount)
+        {
+            enemy.lastFeedbackFrame = Time.frameCount;
+            CombatJuice.Instance?.ApplyHitFeedback(enemy.rootObj != null ? enemy.rootObj.transform : null, enemy.position, dir, isHeavy);
+        }
 
         if (enemy.hp <= 0f)
         {
@@ -1789,13 +1887,55 @@ public class OutpostAndCombatManager : MonoBehaviour
 
                 if (t >= 1f)
                 {
-                    if (_player != null && Vector3.Distance(p.mortarTarget, _player.transform.position) <= 3.4f)
+                    if (p.isEnemy)
                     {
-                        _player.TakeDamage(p.damage);
+                        if (_player != null && Vector3.Distance(p.mortarTarget, _player.transform.position) <= 3.8f)
+                        {
+                            _player.TakeDamage(p.damage);
+                        }
+                        CombatJuice.Instance?.EmitToxicSplatter(p.mortarTarget, 22);
+                        CombatJuice.Instance?.SpawnGroundRippleWave(p.mortarTarget, 5.0f, 15f);
+                        CombatJuice.Instance?.AddCameraTrauma(0.32f);
+                        SolarisGameManager.Instance?.PlaySfx("enemy_hit");
                     }
-                    CombatJuice.Instance?.EmitToxicSplatter(p.mortarTarget, 22);
-                    CombatJuice.Instance?.AddCameraTrauma(0.28f);
-                    SolarisGameManager.Instance?.PlaySfx("enemy_hit");
+                    else
+                    {
+                        // Player Seismic Debris Mortar: massive ground ripple shockwave & area damage
+                        for (int e = ActiveEnemies.Count - 1; e >= 0; e--)
+                        {
+                            var enemy = ActiveEnemies[e];
+                            if (enemy.isDead) continue;
+                            float d = Vector3.Distance(p.mortarTarget, enemy.position);
+                            if (d <= 6.5f)
+                            {
+                                Vector3 pushDir = (enemy.position - p.mortarTarget).normalized;
+                                if (pushDir.sqrMagnitude < 0.01f) pushDir = Vector3.forward;
+                                enemy.knockbackVelocity += pushDir * 24f;
+                                DamageEnemy(enemy, p.damage, pushDir, true);
+                            }
+                        }
+
+                        for (int o = 0; o < Outposts.Count; o++)
+                        {
+                            var op = Outposts[o];
+                            if (op.destroyed) continue;
+                            for (int v = 0; v < op.vents.Count; v++)
+                            {
+                                var vt = op.vents[v];
+                                if (!vt.destroyed && Vector3.Distance(p.mortarTarget, vt.position) <= 6.5f)
+                                {
+                                    DamageVent(vt, p.damage * 0.8f);
+                                }
+                            }
+                        }
+
+                        SandGridWorld.Instance?.CleanCircle(p.mortarTarget, 6.0f, 0.45f);
+                        CombatJuice.Instance?.SpawnGroundRippleWave(p.mortarTarget, 7.5f, 22f);
+                        CombatJuice.Instance?.EmitScrapSparks(p.mortarTarget, Vector3.up, 30);
+                        CombatJuice.Instance?.AddCameraTrauma(0.48f);
+                        CombatJuice.Instance?.TriggerFovKick(5.0f);
+                        SolarisGameManager.Instance?.PlaySfx("outpost_explode");
+                    }
 
                     if (p.dangerCircle != null) SolarisConfig.SafeDestroy(p.dangerCircle);
                     if (p.rootObj != null) SolarisConfig.SafeDestroy(p.rootObj);
@@ -2216,5 +2356,115 @@ public class OutpostAndCombatManager : MonoBehaviour
             dangerCircle = circle
         };
         _projectiles.Add(p);
+    }
+
+    public void SpawnEnemyShrapnelCluster(Vector3 center, int count, float damage)
+    {
+        float angleStep = 360f / count;
+        for (int i = 0; i < count; i++)
+        {
+            float ang = i * angleStep;
+            Vector3 dir = Quaternion.Euler(0f, ang, 0f) * Vector3.forward;
+
+            GameObject shrapnel = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            shrapnel.name = "ToxicShrapnel";
+            shrapnel.transform.position = center + Vector3.up * 0.8f;
+            shrapnel.transform.localScale = new Vector3(0.28f, 0.28f, 0.28f);
+            SolarisConfig.SafeDestroy(shrapnel.GetComponent<Collider>());
+
+            var rend = shrapnel.GetComponent<Renderer>();
+            if (rend != null) rend.sharedMaterial = _matEnemyBolt;
+
+            var p = new ProjectileData
+            {
+                rootObj = shrapnel,
+                position = center + Vector3.up * 0.8f,
+                velocity = dir * 26f,
+                damage = damage,
+                lifetime = 0f,
+                maxLifetime = 0.65f,
+                radius = 0.5f,
+                isEnemy = true
+            };
+            _projectiles.Add(p);
+        }
+    }
+
+    private void UpdateSlagPuddles(float dt)
+    {
+        for (int i = _slagPuddles.Count - 1; i >= 0; i--)
+        {
+            var sp = _slagPuddles[i];
+            sp.lifetime += dt;
+            sp.tickTimer += dt;
+
+            if (sp.lifetime >= sp.maxLifetime)
+            {
+                if (sp.rootObj != null) SolarisConfig.SafeDestroy(sp.rootObj);
+                _slagPuddles.RemoveAt(i);
+                continue;
+            }
+
+            // Damage & slow enemies in radius on discrete interval (0.25s), NOT continuous frame-rate loop!
+            if (sp.tickTimer >= SlagPuddle.TICK_INTERVAL)
+            {
+                sp.tickTimer = 0f;
+                float tickDamage = sp.dps * SlagPuddle.TICK_INTERVAL;
+
+                for (int e = ActiveEnemies.Count - 1; e >= 0; e--)
+                {
+                    var en = ActiveEnemies[e];
+                    if (en.isDead) continue;
+                    if (Vector3.Distance(en.position, sp.position) <= (sp.radius + en.radius))
+                    {
+                        // Pass isDot = true so NO hitstop, NO camera trauma, NO infinite screen shake loop!
+                        DamageEnemy(en, tickDamage, Vector3.zero, isHeavy: false, isDot: true);
+                        en.knockbackVelocity *= 0.85f; // Slowdown effect in magma puddle
+                    }
+                }
+            }
+        }
+    }
+
+    public void SpawnSlagPuddle(Vector3 pos, float duration, float dps)
+    {
+        // Cap max active puddles to 10 to prevent object and draw call bloat
+        if (_slagPuddles.Count >= 10)
+        {
+            var oldest = _slagPuddles[0];
+            if (oldest.rootObj != null) SolarisConfig.SafeDestroy(oldest.rootObj);
+            _slagPuddles.RemoveAt(0);
+        }
+
+        float groundY = _world != null ? _world.GetHeight(pos.x, pos.z) : pos.y;
+        Vector3 spawnPos = new Vector3(pos.x, groundY + 0.05f, pos.z);
+
+        GameObject puddle = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        puddle.name = "SlagPuddle";
+        puddle.transform.position = spawnPos;
+        puddle.transform.localScale = new Vector3(2.4f, 0.02f, 2.4f);
+        SolarisConfig.SafeDestroy(puddle.GetComponent<Collider>());
+
+        var rend = puddle.GetComponent<Renderer>();
+        if (rend != null)
+        {
+            Material pMat = SolarisConfig.CreateMaterial(
+                new Color(1f, 0.35f, 0.05f, 0.85f),
+                0.2f, 0.8f, null,
+                new Color(1f, 0.25f, 0f) * 3.0f
+            );
+            rend.sharedMaterial = pMat;
+        }
+
+        _slagPuddles.Add(new SlagPuddle
+        {
+            rootObj = puddle,
+            position = spawnPos,
+            radius = 1.35f,
+            lifetime = 0f,
+            maxLifetime = duration,
+            dps = dps,
+            tickTimer = 0f
+        });
     }
 }

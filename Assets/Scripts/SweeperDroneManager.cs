@@ -242,7 +242,7 @@ public class SweeperDroneManager : MonoBehaviour
                 if (nearest != null)
                 {
                     d.AttackCooldown = 1.2f;
-                    OutpostAndCombatManager.Instance.FireDroneLaser(d.Root.position, nearest, 12f);
+                    OutpostAndCombatManager.Instance.FireDroneLaser(d.Root.position, nearest, 4.8f); // -60% Nerfed damage
                 }
             }
         }

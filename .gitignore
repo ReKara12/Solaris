@@ -10,6 +10,7 @@ _Quarantine~/
 __pycache__/
 *.csproj
 *.sln
- 
+solaris/
+
 screenshot.png
 unity_build.log

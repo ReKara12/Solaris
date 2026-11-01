@@ -19,8 +19,8 @@ public static class SolarisConfig
     public static readonly Vector3 WORKSHOP_POS = new Vector3(18f, 0f, 14f);
     public static readonly int[] COST_NOZZLE = { 15, 40, 90 };
     public static readonly int[] COST_TANK = { 15, 40, 90 };
-    public static readonly int[] COST_BLASTER = { 20, 50, 110 };
-    public static readonly int[] COST_LANCE = { 30, 70, 140 };
+    public static readonly int[] COST_BLASTER = { 200, 500, 1100 }; // +1000% increased cost tier
+    public static readonly int[] COST_LANCE = { 300, 700, 1400 };   // +1000% increased cost tier
     public static readonly int[] COST_DRONE = { 35, 75, 130, 200 };
 
     public static Shader GetLitShader()

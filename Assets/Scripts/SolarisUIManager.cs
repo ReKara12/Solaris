@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -22,6 +22,18 @@ public class SolarisUIManager : MonoBehaviour
     private GraphicRaycaster _raycaster;
     private Sprite _whiteSprite;
     private Font _uiFont;
+
+    // Custom Sprites & Textures (Duelyst & Witcher UI)
+    private Sprite _mainMenuBgSprite;
+    private Sprite _witcherBannerNormal;
+    private Sprite _witcherBannerHover;
+    private Sprite _witcherBannerPressed;
+    private Sprite _witcherFrameSprite;
+    private Sprite _witcherCardBgSprite;
+    private Sprite _witcherTabActive;
+    private Sprite _witcherTabInactive;
+    private Sprite _duelystLineArc;
+    private Sprite _cornerDiamondSprite;
 
     // Palette Colors (Matte-Black Antigravity Aesthetic)
     private readonly Color COLOR_BG_DARK = new Color(0.051f, 0.059f, 0.071f, 0.94f); // #0D0F12
@@ -77,6 +89,36 @@ public class SolarisUIManager : MonoBehaviour
     }
     private UpgradeCardUI[] _upgradeCards = new UpgradeCardUI[5];
 
+    // Workshop Tabs & Arsenal UI
+    private GameObject _tabPanelUpgrades;
+    private GameObject _tabPanelArsenal;
+    private Image _tabBtnUpgradesBg;
+    private Image _tabBtnArsenalBg;
+
+    private struct WeaponCardUI
+    {
+        public GameObject Root;
+        public Text TitleText;
+        public Text DescText;
+        public Text StatusText;
+        public Button ActionButton;
+        public Text ActionButtonText;
+        public Button[] SlotButtons;
+    }
+    private WeaponCardUI[] _weaponCards = new WeaponCardUI[4];
+
+    // In-Game 3-Slot Weapon Inventory HUD
+    private GameObject _weaponHudBar;
+    private struct WeaponSlotHUD
+    {
+        public GameObject Root;
+        public Image BorderImage;
+        public Text KeyHintText;
+        public Text WeaponNameText;
+        public Image BgImage;
+    }
+    private WeaponSlotHUD[] _slotHUDs = new WeaponSlotHUD[3];
+
     // Main Menu, Pause Menu, Controls, Victory & Toast
     private GameObject _mainMenu;
     private Button _btnSoundToggle;
@@ -130,6 +172,47 @@ public class SolarisUIManager : MonoBehaviour
     {
         CreateWhiteSprite();
         LoadFont();
+        LoadCustomSprites();
+    }
+
+    private Sprite LoadSpriteWithFallback(string resourcePath, Vector4 border)
+    {
+        Sprite s = Resources.Load<Sprite>(resourcePath);
+        if (s != null) return s;
+
+        Texture2D tex = Resources.Load<Texture2D>(resourcePath);
+        if (tex != null)
+        {
+            return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, border);
+        }
+        return null;
+    }
+
+    private void LoadCustomSprites()
+    {
+        if (_witcherBannerNormal != null) return;
+
+        // 1. Duelyst Main Menu Concept Art Background
+        _mainMenuBgSprite = Resources.Load<Sprite>("Textures/MainMenu_Duelyst_BG");
+        if (_mainMenuBgSprite == null)
+        {
+            Texture2D bgTex = Resources.Load<Texture2D>("Textures/MainMenu_Duelyst_BG");
+            if (bgTex != null)
+            {
+                _mainMenuBgSprite = Sprite.Create(bgTex, new Rect(0, 0, bgTex.width, bgTex.height), new Vector2(0.5f, 0.5f));
+            }
+        }
+
+        // 2. Witcher UI Sprites (with 9-slice borders)
+        _witcherBannerNormal = LoadSpriteWithFallback("Textures/UI/ui_witcher_banner_normal", new Vector4(64, 14, 64, 14));
+        _witcherBannerHover = LoadSpriteWithFallback("Textures/UI/ui_witcher_banner_hover", new Vector4(64, 14, 64, 14));
+        _witcherBannerPressed = LoadSpriteWithFallback("Textures/UI/ui_witcher_banner_pressed", new Vector4(64, 14, 64, 14));
+        _witcherFrameSprite = LoadSpriteWithFallback("Textures/UI/ui_witcher_frame", new Vector4(48, 48, 48, 48));
+        _witcherCardBgSprite = LoadSpriteWithFallback("Textures/UI/ui_witcher_card_bg", new Vector4(20, 20, 20, 20));
+        _witcherTabActive = LoadSpriteWithFallback("Textures/UI/ui_witcher_tab_active", new Vector4(36, 10, 36, 10));
+        _witcherTabInactive = LoadSpriteWithFallback("Textures/UI/ui_witcher_tab_inactive", new Vector4(36, 10, 36, 10));
+        _duelystLineArc = LoadSpriteWithFallback("Textures/UI/ui_duelyst_line_arc", Vector4.zero);
+        _cornerDiamondSprite = LoadSpriteWithFallback("Textures/UI/ui_corner_diamond", Vector4.zero);
     }
 
     private void CreateWhiteSprite()
@@ -188,7 +271,9 @@ public class SolarisUIManager : MonoBehaviour
         // 1. Setup Canvas
         _canvas = GetComponent<Canvas>();
         if (_canvas == null) _canvas = gameObject.AddComponent<Canvas>();
-        _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        _canvas.renderMode = RenderMode.ScreenSpaceCamera;
+        _canvas.worldCamera = Camera.main ?? Object.FindFirstObjectByType<Camera>();
+        _canvas.planeDistance = 1.0f;
         _canvas.sortingOrder = 100;
 
         _scaler = GetComponent<CanvasScaler>();
@@ -212,6 +297,9 @@ public class SolarisUIManager : MonoBehaviour
 
         // 3. Build Bottom-Right (3 Sleek Status Bars)
         BuildBottomRightHUD();
+
+        // 3.5. Build Bottom-Center 3-Slot Weapon Inventory HUD
+        BuildWeaponInventoryHUD();
 
         // 4. Build Floating Workshop Badge
         BuildWorkshopBadge();
@@ -339,15 +427,72 @@ public class SolarisUIManager : MonoBehaviour
     // ==========================================
     // FLOATING WORKSHOP BADGE
     // ==========================================
-    private void BuildWorkshopBadge()
+    // ==========================================
+    // BOTTOM-CENTER: 3-SLOT WEAPON INVENTORY HUD
+    // ==========================================
+    private void BuildWeaponInventoryHUD()
     {
-        _workshopBadge = CreateBorderedPanel(transform, "WorkshopBadge", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(440f, 44f), new Vector2(0f, 42f), COLOR_PANEL, COLOR_AMBER, 2f);
+        _weaponHudBar = new GameObject("WeaponHUDBar", typeof(RectTransform));
+        _weaponHudBar.transform.SetParent(transform, false);
+        RectTransform rt = _weaponHudBar.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0f);
+        rt.anchorMax = new Vector2(0.5f, 0f);
+        rt.pivot = new Vector2(0.5f, 0f);
+        rt.anchoredPosition = new Vector2(0f, 16f);
+        rt.sizeDelta = new Vector2(460f, 44f);
 
-        _workshopBadgeText = CreateText(_workshopBadge.transform, "BadgeText", "⚡ [F] SİLİKA ATÖLYESİ & ARITMA MERKEZİ", 15, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_AMBER, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
+        float slotW = 142f;
+        float slotH = 40f;
+        float[] slotX = new float[] { -150f, 0f, 150f };
+        string[] keyLabels = new string[] { "[1]", "[2]", "[3]" };
+
+        for (int i = 0; i < 3; i++)
+        {
+            GameObject slotObj = CreateBorderedPanel(_weaponHudBar.transform, "Slot_" + i,
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
+                new Vector2(slotW, slotH), new Vector2(slotX[i], 0f),
+                new Color(0.06f, 0.08f, 0.10f, 0.95f), COLOR_BORDER, 1.5f);
+
+            _slotHUDs[i].Root = slotObj;
+            _slotHUDs[i].BorderImage = slotObj.GetComponent<Image>();
+            _slotHUDs[i].BgImage = slotObj.transform.GetChild(0).GetComponent<Image>();
+
+            _slotHUDs[i].KeyHintText = CreateText(slotObj.transform, "Key", keyLabels[i], 11, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_CYAN,
+                new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(0f, 0.5f), new Vector2(28f, 0f), new Vector2(8f, 0f));
+
+            _slotHUDs[i].WeaponNameText = CreateText(slotObj.transform, "Name", "[BOŞ]", 11, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_TEXT_MUTED,
+                new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0.5f), new Vector2(-36f, 0f), new Vector2(34f, 0f));
+        }
+
+        UpdateWeaponInventoryHUD();
     }
 
     // ==========================================
-    // IN-WORLD WORKSHOP MODAL
+    // FLOATING WORKSHOP BADGE (WITCHER BANNER STYLE)
+    // ==========================================
+    private void BuildWorkshopBadge()
+    {
+        _workshopBadge = new GameObject("WorkshopBadge", typeof(RectTransform), typeof(Image));
+        _workshopBadge.transform.SetParent(transform, false);
+        RectTransform rt = _workshopBadge.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0f);
+        rt.anchorMax = new Vector2(0.5f, 0f);
+        rt.pivot = new Vector2(0.5f, 0f);
+        rt.anchoredPosition = new Vector2(0f, 68f);
+        rt.sizeDelta = new Vector2(440f, 42f);
+
+        Image img = _workshopBadge.GetComponent<Image>();
+        img.sprite = _witcherBannerNormal ?? _whiteSprite;
+        img.type = _witcherBannerNormal != null ? Image.Type.Sliced : Image.Type.Simple;
+        img.color = Color.white;
+        img.raycastTarget = false;
+
+        _workshopBadgeText = CreateText(_workshopBadge.transform, "BadgeText", "✦  [F] SİLİKA ATÖLYESİ & CEPHANELİK  ✦", 14, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.12f, 0.14f, 0.18f),
+            Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
+    }
+
+    // ==========================================
+    // IN-WORLD WORKSHOP MODAL (WITCHER FRAMED DIALOG)
     // ==========================================
     private void BuildWorkshopModal()
     {
@@ -358,29 +503,47 @@ public class SolarisUIManager : MonoBehaviour
         rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot = new Vector2(0.5f, 0.5f);
         rt.anchoredPosition = Vector2.zero;
-        rt.sizeDelta = new Vector2(680f, 560f);
+        rt.sizeDelta = new Vector2(780f, 620f);
 
-        // Backdrop panel
-        CreateBorderedPanel(_workshopModal.transform, "ModalFrame", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, COLOR_PANEL, COLOR_CYAN, 2.5f);
+        // Backdrop panel: Witcher Frame
+        CreateWitcherFrame(_workshopModal.transform, "ModalFrame", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
         // Header Title
-        CreateText(_workshopModal.transform, "Title", "⚙️ SİLİKA ATÖLYESİ & ARITMA MERKEZİ", 18, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_CYAN,
-            new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(440f, 36f), new Vector2(24f, -16f));
+        CreateText(_workshopModal.transform, "Title", "✦  SİLİKA ATÖLYESİ & CEPHANELİK  ✦", 20, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.92f, 0.82f, 0.65f),
+            new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(440f, 36f), new Vector2(28f, -22f));
 
-        // Sub Status (Silica & Dust Tank)
-        _modalSilicaText = CreateText(_workshopModal.transform, "ModalSilica", "💎 Silika: 0", 14, FontStyle.Bold, TextAnchor.MiddleRight, COLOR_CYAN,
-            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(160f, 24f), new Vector2(-68f, -14f));
-        _modalDustText = CreateText(_workshopModal.transform, "ModalDust", "🛢️ Toz Tankı: 0%", 12, FontStyle.Normal, TextAnchor.MiddleRight, COLOR_AMBER,
-            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(160f, 20f), new Vector2(-68f, -36f));
+        // Sub Status (Silica & Dust Tank) with parchment styling
+        _modalSilicaText = CreateText(_workshopModal.transform, "ModalSilica", "✦ Silika: 0", 14, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.224f, 0.816f, 0.753f),
+            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(160f, 24f), new Vector2(-74f, -16f));
+        _modalDustText = CreateText(_workshopModal.transform, "ModalDust", "☁ Toz Tankı: 0%", 12, FontStyle.Normal, TextAnchor.MiddleRight, COLOR_AMBER,
+            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(160f, 20f), new Vector2(-74f, -38f));
 
         // Close Button [X]
-        CreateButton(_workshopModal.transform, "CloseBtn", "✕", new Color(0.2f, 0.2f, 0.2f, 0.9f), Color.white, () => SetWorkshopVisible(false),
-            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(34f, 34f), new Vector2(-16f, -16f));
+        Button closeBtn = CreateButton(_workshopModal.transform, "CloseBtn", "✕", new Color(0.25f, 0.20f, 0.15f, 0.95f), new Color(0.95f, 0.85f, 0.70f), () => SetWorkshopVisible(false),
+            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(34f, 34f), new Vector2(-22f, -20f));
 
         // Separator line
-        CreatePanel(_workshopModal.transform, "Divider", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(-32f, 2f), new Vector2(0f, -60f), COLOR_BORDER);
+        CreatePanel(_workshopModal.transform, "Divider", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(-48f, 2f), new Vector2(0f, -60f), new Color(0.55f, 0.45f, 0.30f, 0.7f));
 
-        // 5 Upgrade Cards
+        // 2 Workshop Tabs styled with Witcher Tab ribbon sprites
+        Button tab1Btn = CreateTabButton(_workshopModal.transform, "TabUpgrades", "✦  GELİŞTİRMELER", () => SelectWorkshopTab(0),
+            new Vector2(0f, 1f), new Vector2(220f, 34f), new Vector2(28f, -68f), true);
+        _tabBtnUpgradesBg = tab1Btn.GetComponent<Image>();
+
+        Button tab2Btn = CreateTabButton(_workshopModal.transform, "TabArsenal", "⚔  SİLAHLAR / ARSENAL", () => SelectWorkshopTab(1),
+            new Vector2(0f, 1f), new Vector2(240f, 34f), new Vector2(258f, -68f), false);
+        _tabBtnArsenalBg = tab2Btn.GetComponent<Image>();
+
+        // ----------------------------------------------------
+        // TAB PANEL 1: UPGRADES
+        // ----------------------------------------------------
+        _tabPanelUpgrades = new GameObject("TabPanelUpgrades", typeof(RectTransform));
+        _tabPanelUpgrades.transform.SetParent(_workshopModal.transform, false);
+        RectTransform rtUpgrades = _tabPanelUpgrades.GetComponent<RectTransform>();
+        rtUpgrades.anchorMin = Vector2.zero;
+        rtUpgrades.anchorMax = Vector2.one;
+        rtUpgrades.sizeDelta = Vector2.zero;
+
         string[] cardTitles = new string[] {
             "Siklon Vakum Başlığı",
             "Yüksek Basınçlı Toz Tankı",
@@ -396,48 +559,115 @@ public class SolarisUIManager : MonoBehaviour
             "Otomatik devriye gezen ve kum temizleyen drone üretir"
         };
 
-        float startY = -74f;
-        float cardH = 68f;
+        float startY = -112f;
+        float cardH = 72f;
         float cardGap = 8f;
 
         for (int i = 0; i < 5; i++)
         {
             int index = i;
             float cy = startY - i * (cardH + cardGap);
-            GameObject card = CreateBorderedPanel(_workshopModal.transform, "Card_" + i, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, 1f), new Vector2(-48f, cardH), new Vector2(24f, cy), new Color(0.06f, 0.07f, 0.09f, 0.95f), new Color(0.2f, 0.25f, 0.3f, 0.6f), 1.5f);
+            GameObject card = CreateWitcherCard(_tabPanelUpgrades.transform, "Card_" + i,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(-56f, cardH), new Vector2(28f, cy));
 
-            // Title
-            CreateText(card.transform, "Title", cardTitles[i], 14, FontStyle.Bold, TextAnchor.UpperLeft, Color.white,
-                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(360f, 22f), new Vector2(14f, -8f));
+            CreateText(card.transform, "Title", cardTitles[i], 14, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.95f, 0.90f, 0.82f),
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(360f, 22f), new Vector2(16f, -10f));
 
-            // Subtitle
-            CreateText(card.transform, "Desc", cardSub[i], 11, FontStyle.Normal, TextAnchor.UpperLeft, COLOR_TEXT_MUTED,
-                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(380f, 18f), new Vector2(14f, -32f));
+            CreateText(card.transform, "Desc", cardSub[i], 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.70f, 0.65f, 0.58f),
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(380f, 18f), new Vector2(16f, -34f));
 
-            // Level indicator
-            _upgradeCards[i].LevelText = CreateText(card.transform, "Level", "Lv 0/3", 12, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_CYAN,
-                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(120f, 18f), new Vector2(14f, -48f));
+            _upgradeCards[i].LevelText = CreateText(card.transform, "Level", "Lv ◆ ◇ ◇ (0/3)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_AMBER,
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(160f, 18f), new Vector2(16f, -52f));
 
-            // Buy Button
-            _upgradeCards[i].BuyButton = CreateButton(card.transform, "BuyBtn", "YÜKSELT (💎 15)", COLOR_CYAN, COLOR_BG_DARK, () => OnBuyUpgradeClicked(index),
-                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(160f, 38f), new Vector2(-14f, 0f));
+            _upgradeCards[i].BuyButton = CreateBannerButton(card.transform, "BuyBtn", "YÜKSELT (15 Silika)", () => OnBuyUpgradeClicked(index),
+                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(180f, 40f), new Vector2(-16f, 0f), 13);
             _upgradeCards[i].CostText = _upgradeCards[i].BuyButton.GetComponentInChildren<Text>();
         }
 
+        // ----------------------------------------------------
+        // TAB PANEL 2: ARSENAL (4 WEAPONS)
+        // ----------------------------------------------------
+        _tabPanelArsenal = new GameObject("TabPanelArsenal", typeof(RectTransform));
+        _tabPanelArsenal.transform.SetParent(_workshopModal.transform, false);
+        RectTransform rtArsenal = _tabPanelArsenal.GetComponent<RectTransform>();
+        rtArsenal.anchorMin = Vector2.zero;
+        rtArsenal.anchorMax = Vector2.one;
+        rtArsenal.sizeDelta = Vector2.zero;
+        _tabPanelArsenal.SetActive(false);
+
+        string[] wNames = new string[] {
+            "Kristal Kıymık Pompalısı",
+            "Pnömatik Hurda Zıpkını",
+            "Termal Cüruf & Lav Püskürtücü",
+            "Sismik Moloz Havanı"
+        };
+        string[] wCats = new string[] {
+            "[DAĞILIMLI SAÇILMA]",
+            "[AĞIR DARBE & SERSEMLETME]",
+            "[ALAN ENGELLEME & YAKICI]",
+            "[PARABOLİK TOPÇU & ŞOK DALGASI]"
+        };
+        string[] wDescs = new string[] {
+            "8 parçalık silika cam konisi. Yakın mesafede dengeli dağılım ve geri tepme.",
+            "Ağır hurda mızrağı. Başlangıç silahı. Düşmanları duvara fırlatıp sersemletir.",
+            "Akkor cüruf lav akıntısı. Yerde yangın göletleri bırakarak düşmanları yakar.",
+            "Yere çarptığında sismik yer dalgası ve şok dalgası yaratır."
+        };
+
+        float wStartY = -112f;
+        float wCardH = 88f;
+        float wCardGap = 10f;
+
+        for (int i = 0; i < 4; i++)
+        {
+            int wId = i;
+            float cy = wStartY - i * (wCardH + wCardGap);
+            GameObject card = CreateWitcherCard(_tabPanelArsenal.transform, "WCard_" + i,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(-56f, wCardH), new Vector2(28f, cy));
+
+            _weaponCards[i].Root = card;
+
+            _weaponCards[i].TitleText = CreateText(card.transform, "Title", wNames[i] + "  <color=#d4af37>" + wCats[i] + "</color>", 13, FontStyle.Bold, TextAnchor.UpperLeft, Color.white,
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(400f, 22f), new Vector2(16f, -10f));
+
+            _weaponCards[i].DescText = CreateText(card.transform, "Desc", wDescs[i], 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.70f, 0.65f, 0.58f),
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(410f, 20f), new Vector2(16f, -34f));
+
+            _weaponCards[i].StatusText = CreateText(card.transform, "Status", "Kuşan:", 11, FontStyle.Bold, TextAnchor.MiddleLeft, COLOR_AMBER,
+                new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(160f, 18f), new Vector2(16f, -58f));
+
+            // Buy Button: Banner button
+            _weaponCards[i].ActionButton = CreateBannerButton(card.transform, "BuyBtn", "SATIN AL (25 Silika)", () => OnBuyWeaponClicked(wId),
+                new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(180f, 38f), new Vector2(-16f, 0f), 13);
+            _weaponCards[i].ActionButtonText = _weaponCards[i].ActionButton.GetComponentInChildren<Text>();
+
+            // 3 Slot Equip Buttons
+            _weaponCards[i].SlotButtons = new Button[3];
+            float[] sX = new float[] { -136f, -76f, -16f };
+            for (int s = 0; s < 3; s++)
+            {
+                int targetSlot = s;
+                Button slotBtn = CreateButton(card.transform, "SlotBtn_" + s, "SLOT " + (s + 1), new Color(0.18f, 0.15f, 0.12f, 0.95f), new Color(0.92f, 0.85f, 0.70f),
+                    () => OnEquipWeaponSlotClicked(wId, targetSlot),
+                    new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(56f, 34f), new Vector2(sX[s], 0f));
+                _weaponCards[i].SlotButtons[s] = slotBtn;
+            }
+        }
+
         // Bottom 2 Action Buttons
-        // Button 1: Refine Dust
-        _btnRefineDust = CreateButton(_workshopModal.transform, "BtnRefine", "♻️ Toz Tankını Arıt [R]", COLOR_AMBER, COLOR_BG_DARK, OnRefineDustClicked,
-            new Vector2(0f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-36f, 44f), new Vector2(150f, 22f));
+        _btnRefineDust = CreateBannerButton(_workshopModal.transform, "BtnRefine", "☁  Toz Tankını Arıt [R]", OnRefineDustClicked,
+            new Vector2(0f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-48f, 44f), new Vector2(170f, 32f), 13);
         _btnRefineDustText = _btnRefineDust.GetComponentInChildren<Text>();
 
-        // Button 2: Plant Oasis Tree
-        _btnPlantTree = CreateButton(_workshopModal.transform, "BtnPlantTree", "🌳 Yeşil Kuşak Ağacı Dik [T] (💎 8)", COLOR_EMERALD, COLOR_BG_DARK, OnPlantTreeClicked,
-            new Vector2(0.5f, 0f), new Vector2(1f, 0f), new Vector2(0.5f, 0f), new Vector2(-36f, 44f), new Vector2(160f, 22f));
+        _btnPlantTree = CreateBannerButton(_workshopModal.transform, "BtnPlantTree", "✿  Yeşil Kuşak Ağacı Dik [T] (8 Silika)", OnPlantTreeClicked,
+            new Vector2(0.5f, 0f), new Vector2(1f, 0f), new Vector2(0.5f, 0f), new Vector2(-48f, 44f), new Vector2(170f, 32f), 13);
         _btnPlantTreeText = _btnPlantTree.GetComponentInChildren<Text>();
     }
 
     // ==========================================
-    // MAIN MENU OVERLAY
+    // MAIN MENU OVERLAY (DUELYST CINEMATIC STYLE)
     // ==========================================
     private void BuildMainMenuOverlay()
     {
@@ -448,51 +678,102 @@ public class SolarisUIManager : MonoBehaviour
         rt.anchorMax = Vector2.one;
         rt.sizeDelta = Vector2.zero;
 
-        // Dark gradient overlay
-        CreatePanel(_mainMenu.transform, "OverlayBg", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, new Color(0.04f, 0.05f, 0.06f, 0.82f), true);
+        // 1. Fullscreen Cinematic Concept Art Background
+        GameObject bgGo = new GameObject("DuelystBG", typeof(RectTransform), typeof(Image));
+        bgGo.transform.SetParent(_mainMenu.transform, false);
+        RectTransform bgRt = bgGo.GetComponent<RectTransform>();
+        bgRt.anchorMin = Vector2.zero;
+        bgRt.anchorMax = Vector2.one;
+        bgRt.sizeDelta = Vector2.zero;
+        Image bgImg = bgGo.GetComponent<Image>();
+        bgImg.sprite = _mainMenuBgSprite ?? _whiteSprite;
+        bgImg.color = Color.white;
+        bgImg.preserveAspect = false;
+        bgImg.raycastTarget = true;
 
-        // Center card
-        GameObject card = CreateBorderedPanel(_mainMenu.transform, "MenuCard", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(560f, 440f), Vector2.zero, COLOR_BG_DARK, COLOR_CYAN, 2.5f);
+        // 2. Subtle Dark Gradient on Left Side for Typography
+        GameObject vignetteGo = new GameObject("LeftVignette", typeof(RectTransform), typeof(Image));
+        vignetteGo.transform.SetParent(_mainMenu.transform, false);
+        RectTransform vigRt = vignetteGo.GetComponent<RectTransform>();
+        vigRt.anchorMin = new Vector2(0f, 0f);
+        vigRt.anchorMax = new Vector2(0.52f, 1f);
+        vigRt.pivot = new Vector2(0f, 0.5f);
+        vigRt.sizeDelta = Vector2.zero;
+        Image vigImg = vignetteGo.GetComponent<Image>();
+        vigImg.sprite = _whiteSprite;
+        vigImg.color = new Color(0.04f, 0.05f, 0.07f, 0.55f);
+        vigImg.raycastTarget = false;
 
-        // Title
-        CreateText(card.transform, "Title", "SOLARIS RECLAIM", 34, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_CYAN,
-            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(500f, 50f), new Vector2(0f, -40f));
-        CreateText(card.transform, "SubTitle", "Küllerin Altındaki Şehir v2.0", 15, FontStyle.Normal, TextAnchor.MiddleCenter, COLOR_AMBER,
-            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(500f, 26f), new Vector2(0f, -90f));
+        // 3. Orbital Celestial Arc Graphic
+        if (_duelystLineArc != null)
+        {
+            GameObject arcGo = new GameObject("CelestialArc", typeof(RectTransform), typeof(Image));
+            arcGo.transform.SetParent(_mainMenu.transform, false);
+            RectTransform arcRt = arcGo.GetComponent<RectTransform>();
+            arcRt.anchorMin = new Vector2(0f, 0.5f);
+            arcRt.anchorMax = new Vector2(0f, 0.5f);
+            arcRt.pivot = new Vector2(0.5f, 0.5f);
+            arcRt.anchoredPosition = new Vector2(260f, -40f);
+            arcRt.sizeDelta = new Vector2(580f, 580f);
+            Image arcImg = arcGo.GetComponent<Image>();
+            arcImg.sprite = _duelystLineArc;
+            arcImg.color = new Color(0.224f, 0.816f, 0.753f, 0.35f);
+            arcImg.raycastTarget = false;
+        }
 
-        // Buttons
-        float btnW = 340f;
-        float btnH = 44f;
-        float btnSpacing = 14f;
-        float topY = -150f;
+        // 4. Game Title & Subtitle (Left Aligned)
+        float leftX = 110f;
 
-        CreateButton(card.transform, "BtnStart", "OYUNA BAŞLA / DEVAM ET", COLOR_CYAN, COLOR_BG_DARK, () => {
+        CreateText(_mainMenu.transform, "Title", "SOLARIS RECLAIM", 46, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white,
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(500f, 60f), new Vector2(leftX, 180f));
+
+        GameObject line = CreatePanel(_mainMenu.transform, "TitleAccent", new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(380f, 2f), new Vector2(leftX, 145f), COLOR_CYAN);
+
+        CreateText(_mainMenu.transform, "SubTitle", "ÇÖL SÜPÜRÜCÜLERİ  •  GAMEJAM V2.0", 14, FontStyle.Normal, TextAnchor.MiddleLeft, COLOR_AMBER,
+            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(400f, 26f), new Vector2(leftX, 125f));
+
+        // 5. Sleek Typographic Menu List
+        float menuStartY = 60f;
+        float menuSpacing = 52f;
+
+        CreateDuelystMenuItem(_mainMenu.transform, "BtnStart", "►  OYUNA BAŞLA", () => {
             SetMainMenuVisible(false);
             if (_gm != null) _gm.StartGame();
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY));
+        }, new Vector2(leftX, menuStartY));
 
-        CreateButton(card.transform, "BtnReset", "YENİ OYUN (SIFIRLA)", new Color(0.18f, 0.22f, 0.28f, 0.95f), Color.white, () => {
+        CreateDuelystMenuItem(_mainMenu.transform, "BtnReset", "↺  YENİ OYUN (SIFIRLA)", () => {
             SetMainMenuVisible(false);
             if (_gm != null) _gm.RestartGame();
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - (btnH + btnSpacing)));
+        }, new Vector2(leftX, menuStartY - menuSpacing));
 
-        CreateButton(card.transform, "BtnControls", "KONTROLLER & REHBER", new Color(0.18f, 0.22f, 0.28f, 0.95f), Color.white, () => {
+        CreateDuelystMenuItem(_mainMenu.transform, "BtnControls", "✦  KONTROLLER & REHBER", () => {
             SetControlsVisible(true);
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 2f * (btnH + btnSpacing)));
+        }, new Vector2(leftX, menuStartY - menuSpacing * 2f));
 
-        _btnSoundToggle = CreateButton(card.transform, "BtnSound", "SES: AÇIK", new Color(0.18f, 0.22f, 0.28f, 0.95f), COLOR_EMERALD, () => {
+        _btnSoundToggle = CreateDuelystMenuItem(_mainMenu.transform, "BtnSound", "♫  SES: AÇIK", () => {
             if (_gm != null)
             {
                 bool muted = _gm.ToggleMute();
-                _txtSoundToggle.text = muted ? "SES: KAPALI" : "SES: AÇIK";
-                _txtSoundToggle.color = muted ? COLOR_CRIMSON : COLOR_EMERALD;
+                _txtSoundToggle.text = muted ? "♫  SES: KAPALI" : "♫  SES: AÇIK";
+                _txtSoundToggle.color = muted ? COLOR_CRIMSON : Color.white;
             }
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 3f * (btnH + btnSpacing)));
+        }, new Vector2(leftX, menuStartY - menuSpacing * 3f));
         _txtSoundToggle = _btnSoundToggle.GetComponentInChildren<Text>();
+
+        CreateDuelystMenuItem(_mainMenu.transform, "BtnExit", "✕  OYUNDAN ÇIKIŞ", () => {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
+        }, new Vector2(leftX, menuStartY - menuSpacing * 4f));
+
+        // 6. Top-Right Badges
+        BuildDuelystTopRightBadges(_mainMenu.transform);
     }
 
     // ==========================================
-    // ESC PAUSE MENU OVERLAY
+    // ESC PAUSE MENU OVERLAY (WITCHER BANNER STYLE)
     // ==========================================
     private void BuildPauseMenuOverlay()
     {
@@ -503,39 +784,67 @@ public class SolarisUIManager : MonoBehaviour
         rt.anchorMax = Vector2.one;
         rt.sizeDelta = Vector2.zero;
 
-        CreatePanel(_pauseMenu.transform, "OverlayBg", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, new Color(0.04f, 0.05f, 0.06f, 0.75f), true);
+        CreatePanel(_pauseMenu.transform, "OverlayBg", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, new Color(0.04f, 0.05f, 0.07f, 0.85f), true);
 
-        GameObject card = CreateBorderedPanel(_pauseMenu.transform, "PauseCard", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(440f, 360f), Vector2.zero, COLOR_BG_DARK, COLOR_AMBER, 2.5f);
+        // Centered Witcher Card
+        GameObject card = CreateWitcherFrame(_pauseMenu.transform, "PauseCard", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(480f, 480f), Vector2.zero);
 
-        CreateText(card.transform, "Title", "OYUN DURAKLATILDI", 24, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_AMBER,
-            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(400f, 44f), new Vector2(0f, -30f));
+        // Top Diamond Crest
+        if (_cornerDiamondSprite != null)
+        {
+            GameObject dia = new GameObject("TitleDiamond", typeof(RectTransform), typeof(Image));
+            dia.transform.SetParent(card.transform, false);
+            RectTransform drt = dia.GetComponent<RectTransform>();
+            drt.anchorMin = new Vector2(0.5f, 1f);
+            drt.anchorMax = new Vector2(0.5f, 1f);
+            drt.pivot = new Vector2(0.5f, 0.5f);
+            drt.anchoredPosition = new Vector2(0f, -28f);
+            drt.sizeDelta = new Vector2(24f, 24f);
+            Image dimg = dia.GetComponent<Image>();
+            dimg.sprite = _cornerDiamondSprite;
+            dimg.color = new Color(0.85f, 0.70f, 0.40f);
+        }
 
-        float btnW = 300f;
-        float btnH = 40f;
+        CreateText(card.transform, "Title", "OYUN DURAKLATILDI", 20, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.92f, 0.82f, 0.65f),
+            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(400f, 32f), new Vector2(0f, -54f));
+
+        float btnW = 340f;
+        float btnH = 48f;
         float btnSpacing = 12f;
-        float topY = -95f;
+        float topY = -105f;
 
-        CreateButton(card.transform, "BtnResume", "OYUNA DEVAM ET", COLOR_CYAN, COLOR_BG_DARK, () => {
+        CreateBannerButton(card.transform, "BtnResume", "OYUNA DEVAM ET", () => {
             if (_gm != null) _gm.TogglePause();
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY));
+        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY), 15);
 
-        CreateButton(card.transform, "BtnControls", "KONTROLLER & REHBER", new Color(0.18f, 0.22f, 0.28f, 0.95f), Color.white, () => {
+        CreateBannerButton(card.transform, "BtnControls", "KONTROLLER & REHBER", () => {
             SetControlsVisible(true);
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - (btnH + btnSpacing)));
+        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - (btnH + btnSpacing)), 14);
 
-        CreateButton(card.transform, "BtnRestart", "YENİDEN BAŞLAT", new Color(0.18f, 0.22f, 0.28f, 0.95f), Color.white, () => {
+        CreateBannerButton(card.transform, "BtnRestart", "YENİDEN BAŞLAT", () => {
             SetPauseMenuVisible(false);
             if (_gm != null) _gm.RestartGame();
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 2f * (btnH + btnSpacing)));
+        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 2f * (btnH + btnSpacing)), 14);
 
-        CreateButton(card.transform, "BtnMainMenu", "ANA MENÜYE DÖN", new Color(0.18f, 0.22f, 0.28f, 0.95f), COLOR_CRIMSON, () => {
+        CreateBannerButton(card.transform, "BtnMainMenu", "ANA MENÜYE DÖN", () => {
             SetPauseMenuVisible(false);
             SetMainMenuVisible(true);
-        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 3f * (btnH + btnSpacing)));
+        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 3f * (btnH + btnSpacing)), 14);
+
+        CreateBannerButton(card.transform, "BtnExit", "OYUNDAN ÇIKIŞ", () => {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
+        }, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(btnW, btnH), new Vector2(0f, topY - 4f * (btnH + btnSpacing)), 14);
+
+        CreateText(card.transform, "Version", "Versiyon : V.2.0.1 - Solaris Reclaim", 11, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.55f, 0.50f, 0.42f),
+            new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(300f, 20f), new Vector2(0f, 20f));
     }
 
     // ==========================================
-    // CONTROLS & GUIDE MODAL
+    // CONTROLS & GUIDE MODAL (WITCHER STYLE)
     // ==========================================
     private void BuildControlsModal()
     {
@@ -546,34 +855,35 @@ public class SolarisUIManager : MonoBehaviour
         rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot = new Vector2(0.5f, 0.5f);
         rt.anchoredPosition = Vector2.zero;
-        rt.sizeDelta = new Vector2(620f, 480f);
+        rt.sizeDelta = new Vector2(660f, 520f);
 
-        CreateBorderedPanel(_controlsModal.transform, "ModalBg", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, COLOR_BG_DARK, COLOR_CYAN, 2.5f);
+        CreateWitcherFrame(_controlsModal.transform, "ModalBg", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
-        CreateText(_controlsModal.transform, "Title", "🎮 KONTROLLER VE OYUN REHBERİ", 20, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_CYAN,
+        CreateText(_controlsModal.transform, "Title", "✦  KONTROLLER VE OYUN REHBERİ  ✦", 20, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.92f, 0.82f, 0.65f),
             new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(560f, 40f), new Vector2(0f, -25f));
 
         string guide =
             "• WASD: Karakter Hareketi & Konum Alma\n" +
-            "• Fare: Nişan Alma ve Bakış Yönü\n" +
+            "• Fare: Nişan Alma ve Bakış Yönü (Dinamik Kamera)\n" +
             "• Sol Tık: Siklon Vakum (Atık Toplama & Şişen Düşmanı Sönümleme)\n" +
-            "• Sağ Tık: Cam Kırığı Saçması (Geri Dönüşüm Şarapneli / Shotgun)\n" +
-            "• Space: Eco-Dash (Hades Stili Hızlı Sıyrılma & i-frame Kaçış)\n" +
-            "• [Q]: Pnömatik Hurda Pistonu (Ağır İtici / Duvara Çarpma Sersemletmesi)\n" +
-            "• [F]: Termal Isı Tahliyesi (Overheat Vent Blast / Isıyı Boşalt ve Yak)\n" +
+            "• Sağ Tık: Aktif Silahı Ateşle (Geri Tepme & Sarsıntı)\n" +
+            "• 1, 2, 3 / Fare Tekerleği: Silah Değiştir (3 Silah Slotu)\n" +
+            "• Space: Eco-Dash (Hızlı Sıyrılma & i-frame Kaçış)\n" +
+            "• [Left Shift]: Termal Isı Tahliyesi (Overheat Vent Blast)\n" +
+            "• [F]: Silika Atölyesi & Cephanelik Aç (Eco-Hub Yanında)\n" +
             "• [R]: Toz Tankını Arıt (Eco-Hub Yanında Bonuslu Silika)\n" +
-            "• [T]: Yeşil Kuşak Vaha Ağacı Dik (💎 8 Silika)\n" +
-            "• ESC: Duraklat / Pencereleri Kapat";
+            "• [T]: Yeşil Kuşak Vaha Ağacı Dik (◆ 8 Silika)\n" +
+            "• ESC: Menüyü Aç / Pencereleri Kapat";
 
-        CreateText(_controlsModal.transform, "Content", guide, 14, FontStyle.Normal, TextAnchor.UpperLeft, Color.white,
-            new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(-60f, 300f), new Vector2(0f, -80f));
+        CreateText(_controlsModal.transform, "Content", guide, 13, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.90f, 0.86f, 0.80f),
+            new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(-60f, 320f), new Vector2(0f, -80f));
 
-        CreateButton(_controlsModal.transform, "CloseBtn", "KAPAT", COLOR_CYAN, COLOR_BG_DARK, () => SetControlsVisible(false),
-            new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(180f, 38f), new Vector2(0f, 35f));
+        CreateBannerButton(_controlsModal.transform, "CloseBtn", "ANLADIM & KAPAT", () => SetControlsVisible(false),
+            new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(220f, 42f), new Vector2(0f, 38f), 14);
     }
 
     // ==========================================
-    // VICTORY CELEBRATION MODAL
+    // VICTORY CELEBRATION MODAL (WITCHER STYLE)
     // ==========================================
     private void BuildVictoryModal()
     {
@@ -584,11 +894,11 @@ public class SolarisUIManager : MonoBehaviour
         rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot = new Vector2(0.5f, 0.5f);
         rt.anchoredPosition = Vector2.zero;
-        rt.sizeDelta = new Vector2(620f, 400f);
+        rt.sizeDelta = new Vector2(660f, 440f);
 
-        CreateBorderedPanel(_victoryModal.transform, "VictoryFrame", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero, COLOR_BG_DARK, COLOR_EMERALD, 2.5f);
+        CreateWitcherFrame(_victoryModal.transform, "VictoryFrame", Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
-        CreateText(_victoryModal.transform, "Title", "🌿 ŞEHİR KURTARILDI! İLK YAĞMUR BAŞLADI!", 22, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_EMERALD,
+        CreateText(_victoryModal.transform, "Title", "✿  ŞEHİR KURTARILDI! İLK YAĞMUR BAŞLADI!  ✿", 20, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.40f, 0.90f, 0.60f),
             new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(560f, 45f), new Vector2(0f, -30f));
 
         string msg =
@@ -596,17 +906,16 @@ public class SolarisUIManager : MonoBehaviour
             "Güneş panelleri yeniden şebekeye bağlandı, atmosferik su kuleleri devreye girdi " +
             "ve yüzyıllar sonra çölün üzerine ilk yaşam yağmuru yağmaya başladı.\n\n" +
             "Düşman karakollarını temizlemeye, şehri tamamen yeşillendirmeye ve " +
-            "ekipmanlarını geliştirmeye kesintisiz devam edebilirsin!";
+            "ekipmanlarını geliştirmeye serbest modda kesintisiz devam edebilirsin!";
 
-        CreateText(_victoryModal.transform, "Body", msg, 14, FontStyle.Normal, TextAnchor.MiddleCenter, Color.white,
-            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(520f, 180f), new Vector2(0f, 15f));
+        CreateText(_victoryModal.transform, "Body", msg, 14, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.92f, 0.88f, 0.82f),
+            new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(540f, 180f), new Vector2(0f, 15f));
 
-        CreateButton(_victoryModal.transform, "BtnFreePlay", "OYNAMAYA DEVAM ET (SERBEST MOD)", COLOR_EMERALD, COLOR_BG_DARK, () => {
+        CreateBannerButton(_victoryModal.transform, "BtnFreePlay", "OYNAMAYA DEVAM ET (SERBEST MOD)", () => {
             HideVictoryModal();
             if (_gm != null) _gm.EnableFreePlay();
-        }, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(360f, 44f), new Vector2(0f, 42f));
+        }, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(360f, 44f), new Vector2(0f, 45f), 14);
     }
-
     // ==========================================
     // CENTRAL TOAST NOTIFICATION
     // ==========================================
@@ -868,6 +1177,207 @@ public class SolarisUIManager : MonoBehaviour
         {
             _btnPlantTree.interactable = _player.Silica >= SolarisConfig.TREE_COST;
         }
+
+        // Also refresh Arsenal tab UI
+        UpdateWorkshopArsenalUI();
+    }
+
+    private void SelectWorkshopTab(int tabIndex)
+    {
+        bool isUpgrades = (tabIndex == 0);
+        if (_tabPanelUpgrades != null) _tabPanelUpgrades.SetActive(isUpgrades);
+        if (_tabPanelArsenal != null) _tabPanelArsenal.SetActive(!isUpgrades);
+
+        if (_tabBtnUpgradesBg != null)
+        {
+            if (_witcherTabActive != null && _witcherTabInactive != null)
+            {
+                _tabBtnUpgradesBg.sprite = isUpgrades ? _witcherTabActive : _witcherTabInactive;
+                _tabBtnUpgradesBg.color = Color.white;
+            }
+            else
+            {
+                _tabBtnUpgradesBg.color = isUpgrades ? COLOR_CYAN : new Color(0.12f, 0.15f, 0.18f);
+            }
+            var t = _tabBtnUpgradesBg.GetComponentInChildren<Text>();
+            if (t != null) t.color = isUpgrades ? new Color(0.12f, 0.14f, 0.18f) : new Color(0.85f, 0.80f, 0.70f);
+        }
+
+        if (_tabBtnArsenalBg != null)
+        {
+            if (_witcherTabActive != null && _witcherTabInactive != null)
+            {
+                _tabBtnArsenalBg.sprite = !isUpgrades ? _witcherTabActive : _witcherTabInactive;
+                _tabBtnArsenalBg.color = Color.white;
+            }
+            else
+            {
+                _tabBtnArsenalBg.color = !isUpgrades ? COLOR_CYAN : new Color(0.12f, 0.15f, 0.18f);
+            }
+            var t = _tabBtnArsenalBg.GetComponentInChildren<Text>();
+            if (t != null) t.color = !isUpgrades ? new Color(0.12f, 0.14f, 0.18f) : new Color(0.85f, 0.80f, 0.70f);
+        }
+
+        if (!isUpgrades)
+        {
+            UpdateWorkshopArsenalUI();
+        }
+    }
+
+    private void OnBuyWeaponClicked(int weaponId)
+    {
+        if (RecycledWeaponSystem.Instance == null || _player == null) return;
+        var weapons = RecycledWeaponSystem.Instance.Weapons;
+        if (weapons == null || weaponId < 0 || weaponId >= weapons.Length) return;
+
+        var wp = weapons[weaponId];
+        if (wp.isUnlocked) return;
+
+        if (_player.Silica < wp.costSilica)
+        {
+            ShowToast("❌ YETERSİZ SİLİKA! GEREKLİ: " + wp.costSilica + " 💎");
+            return;
+        }
+
+        // Find first empty slot or fallback to slot 0
+        int targetSlot = 0;
+        for (int s = 0; s < RecycledWeaponSystem.Instance.EquippedSlots.Length; s++)
+        {
+            if (RecycledWeaponSystem.Instance.EquippedSlots[s] < 0)
+            {
+                targetSlot = s;
+                break;
+            }
+        }
+
+        if (RecycledWeaponSystem.Instance.BuyAndEquipWeapon(weaponId, targetSlot))
+        {
+            ShowToast("🔫 " + wp.name.ToUpper() + " SATIN ALINDI! [SLOT " + (targetSlot + 1) + "]");
+            UpdateWorkshopArsenalUI();
+            UpdateWeaponInventoryHUD();
+            RefreshWorkshopUI();
+        }
+    }
+
+    private void OnEquipWeaponSlotClicked(int weaponId, int slotIdx)
+    {
+        if (RecycledWeaponSystem.Instance == null) return;
+        if (RecycledWeaponSystem.Instance.EquipWeapon(weaponId, slotIdx))
+        {
+            var wp = RecycledWeaponSystem.Instance.Weapons[weaponId];
+            ShowToast("⚔️ " + wp.shortName + " SLOT " + (slotIdx + 1) + "'E KUŞANILDI");
+            UpdateWorkshopArsenalUI();
+            UpdateWeaponInventoryHUD();
+        }
+    }
+
+    public void UpdateWorkshopArsenalUI()
+    {
+        if (RecycledWeaponSystem.Instance == null) return;
+        var weapons = RecycledWeaponSystem.Instance.Weapons;
+        if (weapons == null) return;
+
+        for (int i = 0; i < 4 && i < weapons.Length; i++)
+        {
+            var wp = weapons[i];
+            int equippedSlot = RecycledWeaponSystem.Instance.GetEquippedSlotForWeapon(i);
+            bool unlocked = wp.isUnlocked;
+
+            if (_weaponCards[i].ActionButton != null)
+            {
+                _weaponCards[i].ActionButton.gameObject.SetActive(!unlocked);
+                if (!unlocked && _weaponCards[i].ActionButtonText != null)
+                {
+                    _weaponCards[i].ActionButtonText.text = "SATIN AL (💎 " + wp.costSilica + ")";
+                    bool canAfford = _player != null && _player.Silica >= wp.costSilica;
+                    _weaponCards[i].ActionButton.GetComponent<Image>().color = canAfford ? COLOR_CYAN : new Color(0.25f, 0.28f, 0.32f);
+                }
+            }
+
+            if (_weaponCards[i].SlotButtons != null)
+            {
+                for (int s = 0; s < 3; s++)
+                {
+                    if (_weaponCards[i].SlotButtons[s] == null) continue;
+                    _weaponCards[i].SlotButtons[s].gameObject.SetActive(unlocked);
+
+                    bool isThisSlot = (equippedSlot == s);
+                    var img = _weaponCards[i].SlotButtons[s].GetComponent<Image>();
+                    var txt = _weaponCards[i].SlotButtons[s].GetComponentInChildren<Text>();
+
+                    if (img != null)
+                    {
+                        img.color = isThisSlot ? COLOR_CYAN : new Color(0.12f, 0.16f, 0.22f);
+                    }
+                    if (txt != null)
+                    {
+                        txt.text = isThisSlot ? "SLOT " + (s + 1) : "SLOT " + (s + 1);
+                        txt.color = isThisSlot ? COLOR_BG_DARK : Color.white;
+                    }
+                }
+            }
+
+            if (_weaponCards[i].StatusText != null)
+            {
+                if (!unlocked)
+                {
+                    _weaponCards[i].StatusText.text = "<color=#8899aa>KİLİTLİ (Atölyeden Satın Al)</color>";
+                }
+                else if (equippedSlot >= 0)
+                {
+                    _weaponCards[i].StatusText.text = "<color=#00e5ff>Kuşanıldı: [SLOT " + (equippedSlot + 1) + "]</color>";
+                }
+                else
+                {
+                    _weaponCards[i].StatusText.text = "<color=#ffaa00>Envanterde (Bir slota ata):</color>";
+                }
+            }
+        }
+    }
+
+    private void UpdateWeaponInventoryHUD()
+    {
+        if (RecycledWeaponSystem.Instance == null) return;
+
+        int active = RecycledWeaponSystem.Instance.ActiveSlotIndex;
+        var slots = RecycledWeaponSystem.Instance.EquippedSlots;
+        var weapons = RecycledWeaponSystem.Instance.Weapons;
+
+        for (int i = 0; i < 3; i++)
+        {
+            bool isActive = (i == active);
+            int wId = (slots != null && i < slots.Length) ? slots[i] : -1;
+
+            if (_slotHUDs[i].BorderImage != null)
+            {
+                _slotHUDs[i].BorderImage.color = isActive ? COLOR_CYAN : COLOR_BORDER;
+            }
+
+            if (_slotHUDs[i].BgImage != null)
+            {
+                _slotHUDs[i].BgImage.color = isActive ? new Color(0.08f, 0.16f, 0.22f, 0.98f) : new Color(0.05f, 0.06f, 0.08f, 0.92f);
+            }
+
+            if (_slotHUDs[i].WeaponNameText != null)
+            {
+                if (wId >= 0 && weapons != null && wId < weapons.Length)
+                {
+                    var wp = weapons[wId];
+                    _slotHUDs[i].WeaponNameText.text = wp.shortName;
+                    _slotHUDs[i].WeaponNameText.color = isActive ? Color.white : COLOR_TEXT_MUTED;
+                }
+                else
+                {
+                    _slotHUDs[i].WeaponNameText.text = "[BOŞ]";
+                    _slotHUDs[i].WeaponNameText.color = new Color(0.35f, 0.38f, 0.42f);
+                }
+            }
+
+            if (_slotHUDs[i].KeyHintText != null)
+            {
+                _slotHUDs[i].KeyHintText.color = isActive ? COLOR_CYAN : COLOR_TEXT_MUTED;
+            }
+        }
     }
 
     // ==========================================
@@ -875,6 +1385,11 @@ public class SolarisUIManager : MonoBehaviour
     // ==========================================
     private void Update()
     {
+        if (_canvas != null && _canvas.worldCamera == null)
+        {
+            _canvas.worldCamera = Camera.main ?? Object.FindFirstObjectByType<Camera>();
+        }
+
         if (_gm == null || !_gm.GameStarted) return;
 
         UpdateMinimap();
@@ -960,6 +1475,15 @@ public class SolarisUIManager : MonoBehaviour
                 string tag = _player.Overheated ? " (AŞIRI ISINDI!)" : "";
                 _barHeatText.text = "🔥 TERMAL: " + Mathf.RoundToInt(heatPct * 100f) + "%" + tag;
             }
+        }
+
+        // 4. In-Game 3-Slot Weapon Inventory HUD
+        UpdateWeaponInventoryHUD();
+
+        // 5. Keep Arsenal sync if Workshop is open
+        if (IsWorkshopOpen)
+        {
+            UpdateWorkshopArsenalUI();
         }
     }
 
@@ -1231,5 +1755,193 @@ public class SolarisUIManager : MonoBehaviour
         t.raycastTarget = false;
 
         return btn;
+    }
+
+    // ==========================================
+    // WITCHER & DUELYST UI CREATION HELPERS
+    // ==========================================
+    private GameObject CreateWitcherFrame(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 size, Vector2 pos, Color? tint = null)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.pivot = pivot;
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = _witcherFrameSprite ?? _whiteSprite;
+        img.type = _witcherFrameSprite != null ? Image.Type.Sliced : Image.Type.Simple;
+        img.color = tint ?? Color.white;
+        img.raycastTarget = true;
+        return go;
+    }
+
+    private GameObject CreateWitcherCard(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 size, Vector2 pos)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.pivot = pivot;
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = _witcherCardBgSprite ?? _whiteSprite;
+        img.type = _witcherCardBgSprite != null ? Image.Type.Sliced : Image.Type.Simple;
+        img.color = Color.white;
+        img.raycastTarget = false;
+        return go;
+    }
+
+    private Button CreateBannerButton(Transform parent, string name, string label, UnityAction onClick,
+        Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 size, Vector2 pos, int fontSize = 14, Color? customTextColor = null)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.pivot = pivot;
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = _witcherBannerNormal ?? _whiteSprite;
+        img.type = _witcherBannerNormal != null ? Image.Type.Sliced : Image.Type.Simple;
+        img.color = Color.white;
+        img.raycastTarget = true;
+
+        Button btn = go.GetComponent<Button>();
+        btn.targetGraphic = img;
+
+        if (_witcherBannerHover != null && _witcherBannerPressed != null)
+        {
+            btn.transition = Selectable.Transition.SpriteSwap;
+            SpriteState ss = new SpriteState();
+            ss.highlightedSprite = _witcherBannerHover;
+            ss.pressedSprite = _witcherBannerPressed;
+            ss.disabledSprite = _witcherBannerNormal;
+            btn.spriteState = ss;
+        }
+        else
+        {
+            btn.transition = Selectable.Transition.ColorTint;
+            ColorBlock cb = btn.colors;
+            cb.normalColor = Color.white;
+            cb.highlightedColor = new Color(1f, 0.95f, 0.8f);
+            cb.pressedColor = new Color(0.8f, 0.75f, 0.65f);
+            btn.colors = cb;
+        }
+
+        if (onClick != null)
+        {
+            btn.onClick.AddListener(() => {
+                if (_gm != null) _gm.PlaySfx("upgrade_unlock");
+                onClick();
+            });
+        }
+
+        Color txtCol = customTextColor ?? new Color(0.12f, 0.14f, 0.18f);
+        Text t = CreateText(go.transform, "BtnText", label, fontSize, FontStyle.Bold, TextAnchor.MiddleCenter, txtCol,
+            Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
+        t.raycastTarget = false;
+
+        return btn;
+    }
+
+    private Button CreateDuelystMenuItem(Transform parent, string name, string label, UnityAction onClick, Vector2 pos)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 0.5f);
+        rt.anchorMax = new Vector2(0f, 0.5f);
+        rt.pivot = new Vector2(0f, 0.5f);
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = new Vector2(300f, 44f);
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = _whiteSprite;
+        img.color = new Color(0.04f, 0.06f, 0.08f, 0.35f);
+        img.raycastTarget = true;
+
+        Button btn = go.GetComponent<Button>();
+        btn.targetGraphic = img;
+
+        ColorBlock cb = btn.colors;
+        cb.normalColor = new Color(0.05f, 0.08f, 0.11f, 0.25f);
+        cb.highlightedColor = new Color(0.224f, 0.816f, 0.753f, 0.28f);
+        cb.pressedColor = new Color(0.224f, 0.816f, 0.753f, 0.50f);
+        cb.selectedColor = cb.normalColor;
+        btn.colors = cb;
+
+        // Left accent indicator line
+        GameObject leftBar = CreatePanel(go.transform, "LeftIndicator", new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(0f, 0.5f), new Vector2(3f, 0f), Vector2.zero, COLOR_CYAN);
+        leftBar.GetComponent<Image>().raycastTarget = false;
+
+        Text t = CreateText(go.transform, "Label", label, 16, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white,
+            new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0.5f), new Vector2(-24f, 0f), new Vector2(20f, 0f));
+        t.raycastTarget = false;
+
+        if (onClick != null)
+        {
+            btn.onClick.AddListener(() => {
+                if (_gm != null) _gm.PlaySfx("blaster_shot");
+                onClick();
+            });
+        }
+
+        return btn;
+    }
+
+    private Button CreateTabButton(Transform parent, string name, string label, UnityAction onClick, Vector2 anchorMinMax, Vector2 size, Vector2 pos, bool isActive)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = anchorMinMax;
+        rt.anchorMax = anchorMinMax;
+        rt.pivot = new Vector2(0f, 1f);
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = isActive ? (_witcherTabActive ?? _whiteSprite) : (_witcherTabInactive ?? _whiteSprite);
+        img.type = Image.Type.Sliced;
+        img.color = Color.white;
+        img.raycastTarget = true;
+
+        Button btn = go.GetComponent<Button>();
+        btn.targetGraphic = img;
+        if (onClick != null) btn.onClick.AddListener(onClick);
+
+        Color txtCol = isActive ? new Color(0.12f, 0.14f, 0.18f) : new Color(0.85f, 0.80f, 0.70f);
+        CreateText(go.transform, "Label", label, 13, FontStyle.Bold, TextAnchor.MiddleCenter, txtCol,
+            Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
+
+        return btn;
+    }
+
+    private void BuildDuelystTopRightBadges(Transform parent)
+    {
+        GameObject root = new GameObject("TopRightBadges", typeof(RectTransform));
+        root.transform.SetParent(parent, false);
+        RectTransform rt = root.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(1f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(1f, 1f);
+        rt.anchoredPosition = new Vector2(-40f, -30f);
+        rt.sizeDelta = new Vector2(360f, 40f);
+
+        CreateBorderedPanel(root.transform, "VerBadge", new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(120f, 30f), new Vector2(0f, 0f), COLOR_PANEL, COLOR_CYAN, 1.5f);
+        CreateText(root.transform.Find("VerBadge"), "Text", "V.2.0 • JAM", 11, FontStyle.Bold, TextAnchor.MiddleCenter, COLOR_CYAN, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
+
+        Button btnHelp = CreateButton(root.transform, "HelpBadge", "✦ REHBER", COLOR_PANEL, Color.white, () => SetControlsVisible(true),
+            new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(110f, 30f), new Vector2(-130f, 0f));
     }
 }

@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -33,6 +33,9 @@ public class SolarisGameManager : MonoBehaviour
     public Light SunLight;
     public Camera MainCam;
     private AudioSource _sfxAudioSource;
+    private AudioSource _bgmAudioSource;
+    private Vector3 _cameraVelocity = Vector3.zero;
+    private const float BASE_FOV = 58f;
 
     // Procedural Audio Cache
     private readonly Dictionary<string, AudioClip> _sfxClipCache = new Dictionary<string, AudioClip>();
@@ -129,6 +132,15 @@ public class SolarisGameManager : MonoBehaviour
         if (_sfxAudioSource == null) _sfxAudioSource = gameObject.AddComponent<AudioSource>();
         _sfxAudioSource.playOnAwake = false;
         _sfxAudioSource.spatialBlend = 0f; // 2D crisp UI / Master sound
+
+        // Setup BGM AudioSource
+        AudioSource[] allSources = GetComponents<AudioSource>();
+        if (allSources.Length > 1) _bgmAudioSource = allSources[1];
+        if (_bgmAudioSource == null) _bgmAudioSource = gameObject.AddComponent<AudioSource>();
+        _bgmAudioSource.loop = true;
+        _bgmAudioSource.playOnAwake = false;
+        _bgmAudioSource.spatialBlend = 0f;
+        _bgmAudioSource.volume = 0.5f;
 
         // 5. Create / Attach Core Systems in Order
         GameObject root = gameObject;
@@ -291,6 +303,8 @@ public class SolarisGameManager : MonoBehaviour
         IsPaused = false;
         Time.timeScale = 1f;
 
+        PlayBGM("bgm_gameplay");
+
         if (MainCam != null && Player != null)
         {
             MainCam.transform.position = Player.transform.position + new Vector3(0f, 20f, -13f);
@@ -335,6 +349,7 @@ public class SolarisGameManager : MonoBehaviour
     {
         IsMuted = !IsMuted;
         if (_sfxAudioSource != null) _sfxAudioSource.mute = IsMuted;
+        if (_bgmAudioSource != null) _bgmAudioSource.mute = IsMuted;
         return IsMuted;
     }
 
@@ -371,18 +386,42 @@ public class SolarisGameManager : MonoBehaviour
             return;
         }
 
-        // 2. Smooth Camera Follow Player (in-game)
+        // 2. Smooth Camera Follow Player with Mouse Look-Ahead / Lead (GMTK & Vlambeer)
         if (MainCam != null && Player != null)
         {
-            Vector3 targetCamPos = Player.transform.position + new Vector3(0f, 20f, -13f);
-            MainCam.transform.position = Vector3.Lerp(MainCam.transform.position, targetCamPos, Time.deltaTime * 7f);
-            MainCam.transform.LookAt(Player.transform.position + Vector3.up * 1.5f);
+            Vector3 playerPos = Player.transform.position;
+            Vector3 focusPoint = playerPos;
 
-            // Apply CombatJuice Trauma Camera Shake
+            // Mouse Look-Ahead: raycast mouse on ground plane to give player predictive combat vision
+            Ray mouseRay = MainCam.ScreenPointToRay(Input.mousePosition);
+            Plane groundPlane = new Plane(Vector3.up, new Vector3(0f, playerPos.y, 0f));
+            if (groundPlane.Raycast(mouseRay, out float hitDist))
+            {
+                Vector3 mouseWorld = mouseRay.GetPoint(hitDist);
+                Vector3 mouseOffset = mouseWorld - playerPos;
+                mouseOffset.y = 0f;
+                mouseOffset = Vector3.ClampMagnitude(mouseOffset, 12f);
+                focusPoint = playerPos + mouseOffset * 0.28f;
+            }
+
+            Vector3 camTargetPos = focusPoint + new Vector3(0f, 20f, -13.5f);
+
+            // Apply CombatJuice directional recoil kick
+            if (CombatJuice.Instance != null)
+            {
+                camTargetPos += CombatJuice.Instance.GetRecoilKickOffset();
+            }
+
+            MainCam.transform.position = Vector3.SmoothDamp(MainCam.transform.position, camTargetPos, ref _cameraVelocity, 0.12f);
+            Quaternion baseCamRot = Quaternion.Euler(55f, 0f, 0f);
+            MainCam.transform.rotation = baseCamRot;
+
+            // Apply CombatJuice trauma camera shake & dynamic FOV punch
             if (CombatJuice.Instance != null)
             {
                 MainCam.transform.position += CombatJuice.Instance.GetShakeOffset();
-                MainCam.transform.rotation = MainCam.transform.rotation * CombatJuice.Instance.GetShakeRotation();
+                MainCam.transform.rotation = baseCamRot * CombatJuice.Instance.GetShakeRotation();
+                MainCam.fieldOfView = BASE_FOV + CombatJuice.Instance.GetFovDelta();
             }
         }
 
@@ -680,5 +719,36 @@ public class SolarisGameManager : MonoBehaviour
         AudioClip clip = AudioClip.Create("Procedural_" + name, samples.Length, 1, sampleRate, false);
         clip.SetData(samples, 0);
         return clip;
+    }
+
+    public void PlayBGM(string name)
+    {
+        if (_bgmAudioSource == null)
+        {
+            AudioSource[] allSources = GetComponents<AudioSource>();
+            if (allSources.Length > 1) _bgmAudioSource = allSources[1];
+            if (_bgmAudioSource == null) _bgmAudioSource = gameObject.AddComponent<AudioSource>();
+            _bgmAudioSource.loop = true;
+            _bgmAudioSource.playOnAwake = false;
+            _bgmAudioSource.spatialBlend = 0f;
+            _bgmAudioSource.volume = 0.5f;
+        }
+
+        AudioClip clip = Resources.Load<AudioClip>("Audio/" + name);
+        if (clip != null)
+        {
+            _bgmAudioSource.clip = clip;
+            _bgmAudioSource.mute = IsMuted;
+            _bgmAudioSource.Play();
+        }
+        else
+        {
+            Debug.LogWarning("[SolarisGameManager] Could not load BGM AudioClip at Resources/Audio/" + name);
+        }
+    }
+
+    public void StopBGM()
+    {
+        if (_bgmAudioSource != null) _bgmAudioSource.Stop();
     }
 }

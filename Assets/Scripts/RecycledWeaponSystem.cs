@@ -39,33 +39,34 @@ public class RecycledWeaponSystem : MonoBehaviour
     public WeaponProfile[] Weapons;
 
     [Header("3-Slot Inventory")]
-    public int[] EquippedSlots = new int[3] { 0, -1, -1 }; // Slot 0 has default shotgun
+    public int[] EquippedSlots = new int[3] { 1, -1, -1 }; // Slot 0 has default starting Scrap Harpoon (ID 1)
     public int ActiveSlotIndex = 0;
 
     [Header("Weapon Cooldowns")]
     public float ActiveWeaponCooldown = 0f;
     public float VentCooldown = 0f;
 
-    // References
+    // References & Puddle Throttling
     private EcoReclaimerPlayer _player;
     private Material _matGlassShard;
     private Material _matScrapSlug;
     private Material _matSlagFire;
     private Material _matMortarBomb;
     private ParticleSystem _steamVentPS;
+    private int _slagShotCounter = 0;
 
     public WeaponProfile CurrentWeapon
     {
         get
         {
             if (EquippedSlots == null || ActiveSlotIndex < 0 || ActiveSlotIndex >= EquippedSlots.Length)
-                return Weapons != null && Weapons.Length > 0 ? Weapons[0] : null;
+                return Weapons != null && Weapons.Length > 1 ? Weapons[1] : (Weapons != null && Weapons.Length > 0 ? Weapons[0] : null);
 
             int wId = EquippedSlots[ActiveSlotIndex];
             if (wId >= 0 && Weapons != null && wId < Weapons.Length)
                 return Weapons[wId];
 
-            return Weapons != null && Weapons.Length > 0 ? Weapons[0] : null;
+            return Weapons != null && Weapons.Length > 1 ? Weapons[1] : (Weapons != null && Weapons.Length > 0 ? Weapons[0] : null);
         }
     }
 
@@ -78,58 +79,98 @@ public class RecycledWeaponSystem : MonoBehaviour
         }
         Instance = this;
         InitWeaponProfiles();
+        if (EquippedSlots == null || EquippedSlots.Length != 3)
+        {
+            EquippedSlots = new int[3] { 1, -1, -1 };
+        }
+        
+        // Cleanse equipped slots from locked weapons & guarantee starting weapon (Harpoon ID 1) is equipped
+        bool hasStartingWeapon = false;
+        for (int i = 0; i < EquippedSlots.Length; i++)
+        {
+            int wId = EquippedSlots[i];
+            if (wId >= 0 && wId < Weapons.Length && !Weapons[wId].isUnlocked)
+            {
+                EquippedSlots[i] = -1;
+            }
+            if (EquippedSlots[i] == 1) hasStartingWeapon = true;
+        }
+        if (!hasStartingWeapon)
+        {
+            EquippedSlots[0] = 1;
+        }
     }
 
     private void Start()
     {
+        Instance = this;
         _player = GetComponent<EcoReclaimerPlayer>() ?? FindFirstObjectByType<EcoReclaimerPlayer>();
+        if (Weapons == null || Weapons.Length < 4) InitWeaponProfiles();
+        if (EquippedSlots == null || EquippedSlots.Length != 3) EquippedSlots = new int[3] { 1, -1, -1 };
+        
+        // Ensure starting weapon is equipped
+        bool hasStartingWeapon = false;
+        for (int i = 0; i < EquippedSlots.Length; i++)
+        {
+            int wId = EquippedSlots[i];
+            if (wId >= 0 && wId < Weapons.Length && !Weapons[wId].isUnlocked)
+            {
+                EquippedSlots[i] = -1;
+            }
+            if (EquippedSlots[i] == 1) hasStartingWeapon = true;
+        }
+        if (!hasStartingWeapon)
+        {
+            EquippedSlots[0] = 1;
+        }
         InitMaterials();
         BuildSteamVentParticleSystem();
+        SolarisUIManager.Instance?.UpdateHUD();
     }
 
     private void InitWeaponProfiles()
     {
         Weapons = new WeaponProfile[4];
 
-        // 0: Kristal Kıymık Pompalısı (Glass Shotgun)
+        // 0: Kristal Kıymık Pompalısı (Glass Shotgun) - Shop Weapon
         Weapons[0] = new WeaponProfile
         {
             id = 0,
             name = "Kristal Kıymık Pompalısı",
             shortName = "Kıymık Pompalı",
             category = "DAĞILIMLI SAÇILMA",
-            description = "Geri dönüştürülmüş keskin silika cam parçacıkları fırlatır. 8 parçalık konik saçılım yakın mesafede ölümcüldür.",
+            description = "Geri dönüştürülmüş silika cam parçacıkları fırlatır. 8 parçalık konik saçılım yakın mesafede etkilidir.",
             fireCooldown = 0.34f,
-            baseDamage = 16f,
+            baseDamage = 6.4f, // -60% Nerf (was 16f)
             heatPerShot = 10f,
             recoilKick = 0.28f,
             recoilPitch = 8.5f,
             pushbackImpulse = 4.2f,
             cameraTrauma = 0.20f,
             fovPunch = 2.5f,
-            costSilica = 0,
-            isUnlocked = true,
+            costSilica = 250, // +1000% increased cost tier
+            isUnlocked = false,
             themeColor = new Color(0.2f, 0.95f, 1f)
         };
 
-        // 1: Pnömatik Hurda Zıpkını (Scrap Harpoon)
+        // 1: Pnömatik Hurda Zıpkını (Scrap Harpoon) - DEFAULT STARTING WEAPON
         Weapons[1] = new WeaponProfile
         {
             id = 1,
             name = "Pnömatik Hurda Zıpkını",
             shortName = "Hurda Zıpkın",
             category = "AĞIR DARBE & SERSEMLETME",
-            description = "Ağır sıkıştırılmış metal piston mızrağı. Düşmanları şiddetle geri iter ve duvara çarparlarsa sersemletip ezer.",
+            description = "Ağır hurda metal mızrağı. Başlangıç silahı. Düşmanları geri savurur ve duvara çarparlarsa sersemletip ezer.",
             fireCooldown = 0.68f,
-            baseDamage = 58f,
+            baseDamage = 23.2f, // -60% Nerf (was 58f)
             heatPerShot = 18f,
             recoilKick = 0.42f,
             recoilPitch = 12f,
             pushbackImpulse = 6.8f,
             cameraTrauma = 0.34f,
             fovPunch = 4.0f,
-            costSilica = 25,
-            isUnlocked = false,
+            costSilica = 0, // Default starting weapon!
+            isUnlocked = true,
             themeColor = new Color(1f, 0.6f, 0.15f)
         };
 
@@ -140,16 +181,16 @@ public class RecycledWeaponSystem : MonoBehaviour
             name = "Termal Cüruf Püskürtücü",
             shortName = "Cüruf Lavı",
             category = "ALAN ENGELLEME & YAKICI",
-            description = "Akışkan akkor cüruf lavı fırlatır. Yerde 2.5 saniye süren alevli magma göletleri bırakarak geçenleri yakar.",
+            description = "Akışkan akkor cüruf lavı fırlatır. Yerde erimiş magma göletleri bırakarak geçen düşmanları yakar.",
             fireCooldown = 0.09f,
-            baseDamage = 9f,
+            baseDamage = 3.6f, // -60% Nerf (was 9f)
             heatPerShot = 2.6f,
             recoilKick = 0.08f,
             recoilPitch = 2.5f,
             pushbackImpulse = 1.4f,
-            cameraTrauma = 0.06f,
+            cameraTrauma = 0.04f,
             fovPunch = 0.8f,
-            costSilica = 35,
+            costSilica = 350, // +1000% increased cost tier (was 35)
             isUnlocked = false,
             themeColor = new Color(1f, 0.35f, 0.05f)
         };
@@ -161,16 +202,16 @@ public class RecycledWeaponSystem : MonoBehaviour
             name = "Sismik Moloz Havanı",
             shortName = "Sismik Havan",
             category = "PARABOLİK TOPÇU & ŞOK DALGASI",
-            description = "Yere çarptığında devasa sismik yer dalgası ve şok dalgası yayan ağır moloz patlayıcısı fırlatır.",
+            description = "Yere çarptığında sismik yer dalgası ve şok dalgası yayan ağır moloz patlayıcısı fırlatır.",
             fireCooldown = 1.15f,
-            baseDamage = 85f,
+            baseDamage = 34f, // -60% Nerf (was 85f)
             heatPerShot = 26f,
             recoilKick = 0.52f,
             recoilPitch = 16f,
             pushbackImpulse = 8.5f,
             cameraTrauma = 0.46f,
             fovPunch = 5.5f,
-            costSilica = 45,
+            costSilica = 450, // +1000% increased cost tier (was 45)
             isUnlocked = false,
             themeColor = new Color(0.9f, 0.8f, 0.2f)
         };
@@ -343,13 +384,13 @@ public class RecycledWeaponSystem : MonoBehaviour
         // Camera shake and FOV kick
         CombatJuice.Instance?.AddCameraTrauma(wp.cameraTrauma);
         CombatJuice.Instance?.TriggerFovKick(wp.fovPunch);
-        Vector2 screenKick = new Vector2(-forwardDir.x, -forwardDir.z) * (wp.recoilKick * 0.45f);
-        CombatJuice.Instance?.AddDirectionalCameraKick(screenKick, wp.recoilKick * 0.35f);
+        Vector3 kickVec = new Vector3(-forwardDir.x, 0f, -forwardDir.z);
+        CombatJuice.Instance?.AddDirectionalCameraKick(kickVec, wp.recoilKick * 0.35f);
 
         // Muzzle & ejection juice
         Vector3 rightDir = Vector3.Cross(Vector3.up, forwardDir).normalized;
         CombatJuice.Instance?.EmitMuzzleSparks(muzzlePos, forwardDir, 8);
-        CombatJuice.Instance?.EmitEjectionParticles(muzzlePos - forwardDir * 0.25f, rightDir, 3);
+        CombatJuice.Instance?.EmitEjectionParticles(muzzlePos - forwardDir * 0.25f, rightDir, wp.id == 0);
 
         switch (wp.id)
         {
@@ -380,7 +421,7 @@ public class RecycledWeaponSystem : MonoBehaviour
     {
         int shardCount = 8;
         float spreadAngle = 24f;
-        float baseDmg = wp.baseDamage + _player.BlasterLevel * 5f;
+        float baseDmg = wp.baseDamage + _player.BlasterLevel * 2.0f; // -60% Nerfed scaling
 
         for (int i = 0; i < shardCount; i++)
         {
@@ -419,7 +460,7 @@ public class RecycledWeaponSystem : MonoBehaviour
     // ------------------------------------------------------------
     private void FireScrapHarpoon(Vector3 muzzlePos, Vector3 forwardDir, WeaponProfile wp)
     {
-        float dmg = wp.baseDamage + _player.BlasterLevel * 18f;
+        float dmg = wp.baseDamage + _player.BlasterLevel * 7.2f; // -60% Nerfed scaling
 
         GameObject slug = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
         slug.name = "ScrapHarpoonSlug";
@@ -450,7 +491,7 @@ public class RecycledWeaponSystem : MonoBehaviour
     // ------------------------------------------------------------
     private void FireSlagTorch(Vector3 muzzlePos, Vector3 forwardDir, WeaponProfile wp)
     {
-        float dmg = wp.baseDamage + _player.BlasterLevel * 3.5f;
+        float dmg = wp.baseDamage + _player.BlasterLevel * 1.4f; // -60% Nerfed scaling
 
         // Small angular jitter for flamethrower cone
         Quaternion jitterRot = Quaternion.Euler(UnityEngine.Random.Range(-3f, 3f), UnityEngine.Random.Range(-7f, 7f), 0);
@@ -477,9 +518,13 @@ public class RecycledWeaponSystem : MonoBehaviour
 
         OutpostAndCombatManager.Instance?.RegisterExternalProjectile(p);
 
-        // Spawn a burning molten slag puddle on the ground ahead to burn passing enemies
-        Vector3 puddlePos = muzzlePos + forwardDir * UnityEngine.Random.Range(4f, 10f);
-        OutpostAndCombatManager.Instance?.SpawnSlagPuddle(puddlePos, 2.4f, dmg * 0.4f);
+        // Spawn a burning molten slag puddle on the ground ahead ONLY every 4th shot to prevent puddle spamming
+        _slagShotCounter++;
+        if (_slagShotCounter % 4 == 0)
+        {
+            Vector3 puddlePos = muzzlePos + forwardDir * UnityEngine.Random.Range(4f, 9f);
+            OutpostAndCombatManager.Instance?.SpawnSlagPuddle(puddlePos, 2.2f, dmg * 0.75f);
+        }
 
         SolarisGameManager.Instance?.PlaySfx("blaster_shot");
     }
@@ -489,7 +534,7 @@ public class RecycledWeaponSystem : MonoBehaviour
     // ------------------------------------------------------------
     private void FireDebrisMortar(Vector3 muzzlePos, Vector3 forwardDir, WeaponProfile wp)
     {
-        float dmg = wp.baseDamage + _player.BlasterLevel * 24f;
+        float dmg = wp.baseDamage + _player.BlasterLevel * 9.6f; // -60% Nerfed scaling
 
         // Calculate landing target: mouse aim ground pos or forward 16m
         Vector3 targetGround = muzzlePos + forwardDir * 15f;
@@ -588,8 +633,8 @@ public class RecycledWeaponSystem : MonoBehaviour
             }
         }
 
-        // Damage and knock back enemies in 9.5m cone
-        OutpostAndCombatManager.Instance?.OnVentBlast(origin, forward, 9.5f, 45f + _player.BlasterLevel * 12f);
+        // Damage and knock back enemies in 9.5m cone (-60% Nerfed scaling)
+        OutpostAndCombatManager.Instance?.OnVentBlast(origin, forward, 9.5f, 18f + _player.BlasterLevel * 4.8f);
 
         // Ground shockwave ripple
         CombatJuice.Instance?.SpawnGroundRippleWave(origin, 6.0f, 18f);
@@ -605,6 +650,14 @@ public class RecycledWeaponSystem : MonoBehaviour
     }
 
     // Backwards-compatible methods
+    public void ReplenishFromTrash(float amount)
+    {
+        if (_player != null && _player.Heat > 0f)
+        {
+            _player.Heat = Mathf.Max(0f, _player.Heat - amount * 0.4f);
+        }
+    }
+
     public bool TryFireGlassScatter(Vector3 muzzlePos, Vector3 forwardDir)
     {
         return TryFireActiveWeapon(muzzlePos, forwardDir);

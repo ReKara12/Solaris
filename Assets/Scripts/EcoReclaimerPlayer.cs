@@ -71,6 +71,11 @@ public class EcoReclaimerPlayer : MonoBehaviour
     private Quaternion _rifleBaseLocalRot = Quaternion.identity;
     private Vector3 _recoilVelocity = Vector3.zero;
 
+    // Damage Cooldown / i-Frames (Invulnerability Frames)
+    public float DamageCooldownTimer = 0f;
+    public const float DAMAGE_COOLDOWN_DURATION = 0.50f;
+    private Renderer[] _cachedPlayerRenderers;
+
     // Astroneer-style closed-loop particle suction
     private ParticleSystem _suctionStreamPS;
     private ParticleSystem.Particle[] _particleBuffer = new ParticleSystem.Particle[512];
@@ -83,6 +88,11 @@ public class EcoReclaimerPlayer : MonoBehaviour
             return;
         }
         Instance = this;
+
+        if (GetComponent<RecycledWeaponSystem>() == null)
+        {
+            gameObject.AddComponent<RecycledWeaponSystem>();
+        }
     }
 
     private void Start()
@@ -354,6 +364,9 @@ public class EcoReclaimerPlayer : MonoBehaviour
         GameObject rifleGroup = new GameObject("DualModeRifle");
         rifleGroup.transform.SetParent(_charPivot, false);
         rifleGroup.transform.localPosition = new Vector3(0.48f, 1.15f, 0.35f);
+        _riflePivot = rifleGroup.transform;
+        _rifleBaseLocalPos = rifleGroup.transform.localPosition;
+        _rifleBaseLocalRot = rifleGroup.transform.localRotation;
 
         CreatePrimitivePart(PrimitiveType.Cube, "RifleBody", rifleGroup.transform, new Vector3(0f, 0f, 0.3f), new Vector3(0.18f, 0.24f, 1.1f), Quaternion.identity, darkCarbonMat);
         CreatePrimitivePart(PrimitiveType.Cube, "RifleTrim", rifleGroup.transform, new Vector3(0f, 0.05f, 0.25f), new Vector3(0.2f, 0.14f, 0.75f), Quaternion.identity, platingMat);
@@ -430,6 +443,13 @@ public class EcoReclaimerPlayer : MonoBehaviour
         if (BlasterCooldown > 0f) BlasterCooldown -= dt;
         if (DashCooldown > 0f) DashCooldown -= dt;
 
+        // Damage i-Frame cooldown and visual flicker
+        if (DamageCooldownTimer > 0f)
+        {
+            DamageCooldownTimer -= dt;
+            UpdateDamageCooldownVisual(DamageCooldownTimer);
+        }
+
         if (IsDashing)
         {
             _dashTimer -= dt;
@@ -477,6 +497,13 @@ public class EcoReclaimerPlayer : MonoBehaviour
 
         // 6. Dynamic Dust Tank Visual Scaling & Amber Glow
         UpdateDustTankVisual();
+
+        // Smooth gun recoil recovery
+        if (_riflePivot != null)
+        {
+            _riflePivot.localPosition = Vector3.Lerp(_riflePivot.localPosition, _rifleBaseLocalPos, dt * 18f);
+            _riflePivot.localRotation = Quaternion.Slerp(_riflePivot.localRotation, _rifleBaseLocalRot, dt * 18f);
+        }
 
         // 7. Movement & Aiming
         ProcessMovementAndAim(dt, inOasis);
@@ -541,6 +568,13 @@ public class EcoReclaimerPlayer : MonoBehaviour
         if (StormSlowActive && !inOasis)
         {
             moveDelta += StormWindForce * dt;
+        }
+
+        // Apply physical gun recoil impulse pushback
+        if (_recoilVelocity.sqrMagnitude > 0.001f)
+        {
+            moveDelta += _recoilVelocity * dt;
+            _recoilVelocity = Vector3.Lerp(_recoilVelocity, Vector3.zero, dt * 12f);
         }
 
         Vector3 targetPos = transform.position + moveDelta;
@@ -690,32 +724,41 @@ public class EcoReclaimerPlayer : MonoBehaviour
         // Steer all active suction particles in flight towards nozzle
         SteerSuctionParticles(dt);
 
-        // B. Right-Click: Recycled Glass Shard Spreader (Shotgun)
+        // B. Weapon Slot Selection (1, 2, 3 & Mouse Scroll Wheel)
+        if (Input.GetKeyDown(KeyCode.Alpha1)) RecycledWeaponSystem.Instance?.SwitchSlot(0);
+        if (Input.GetKeyDown(KeyCode.Alpha2)) RecycledWeaponSystem.Instance?.SwitchSlot(1);
+        if (Input.GetKeyDown(KeyCode.Alpha3)) RecycledWeaponSystem.Instance?.SwitchSlot(2);
+
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        if (scroll > 0.04f) RecycledWeaponSystem.Instance?.CycleSlot(-1);
+        else if (scroll < -0.04f) RecycledWeaponSystem.Instance?.CycleSlot(1);
+
+        // C. Right-Click: Fire Active Weapon
         if (Input.GetMouseButton(1) && !Overheated)
         {
             Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
             if (RecycledWeaponSystem.Instance != null)
             {
-                RecycledWeaponSystem.Instance.TryFireGlassScatter(muzPos, transform.forward);
+                RecycledWeaponSystem.Instance.TryFireActiveWeapon(muzPos, transform.forward);
             }
             else if (BlasterCooldown <= 0f)
             {
                 BlasterCooldown = 0.22f;
                 Heat += 8f;
                 if (Heat >= HeatMax) { Heat = HeatMax; Overheated = true; }
-                float dmg = 22f + BlasterLevel * 8f;
+                float dmg = 8.8f + BlasterLevel * 3.2f; // -60% Nerfed fallback
                 OutpostAndCombatManager.Instance?.FirePlayerBlaster(muzPos, transform.forward, dmg);
                 SolarisGameManager.Instance?.PlaySfx("blaster_shot");
             }
         }
 
-        // C. [SPACE] Eco-Dash (Hades Evasion with i-frames)
+        // D. [SPACE] Eco-Dash (Hades Evasion with i-frames)
         if (Input.GetKeyDown(KeyCode.Space))
         {
             TryTriggerEcoDash();
         }
 
-        // D. [Q] Pneumatic Scrap Piston / Harpoon Slug (Special Attack)
+        // E. [Q] Pneumatic Scrap Piston / Harpoon Slug (Special Attack shortcut)
         if (Input.GetKeyDown(KeyCode.Q))
         {
             Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
@@ -729,8 +772,8 @@ public class EcoReclaimerPlayer : MonoBehaviour
             }
         }
 
-        // E. [F] Thermal Slag Vent Blast (Purges 65% Overheat)
-        if (Input.GetKeyDown(KeyCode.F))
+        // F. [Left Shift] Thermal Slag Vent Blast (Purges 65% Overheat)
+        if (Input.GetKeyDown(KeyCode.LeftShift))
         {
             if (RecycledWeaponSystem.Instance != null)
             {
@@ -738,13 +781,13 @@ public class EcoReclaimerPlayer : MonoBehaviour
             }
         }
 
-        // F. [R] Smelt Dust
+        // G. [R] Smelt Dust
         if (Input.GetKeyDown(KeyCode.R))
         {
             SmeltDust();
         }
 
-        // G. [T] Plant Oasis Tree
+        // H. [T] Plant Oasis Tree
         if (Input.GetKeyDown(KeyCode.T))
         {
             TryPlantOasisTree();
@@ -798,7 +841,7 @@ public class EcoReclaimerPlayer : MonoBehaviour
 
         float radius = 14f + NozzleLevel * 3f;
         _world?.CleanCircle(transform.position, radius, 0.35f);
-        OutpostAndCombatManager.Instance?.OnPlayerShockwave(transform.position, radius, 35f + BlasterLevel * 12f);
+        OutpostAndCombatManager.Instance?.OnPlayerShockwave(transform.position, radius, 14f + BlasterLevel * 4.8f); // -60% Nerfed scaling
 
         SpawnShockwaveVisual(transform.position, radius);
         SolarisGameManager.Instance?.PlaySfx("solar_lance");
@@ -860,7 +903,7 @@ public class EcoReclaimerPlayer : MonoBehaviour
         LanceCooldown = 4.0f;
 
         int restored = _world != null ? _world.SolarPanelsRestored : 0;
-        float dmg = 55f + LanceLevel * 25f + (restored * 4f);
+        float dmg = 22f + LanceLevel * 10f + (restored * 1.6f); // -60% Nerfed scaling
 
         Vector3 muzPos = MuzzleTransform != null ? MuzzleTransform.position : (transform.position + transform.forward * 1.2f + Vector3.up * 1.2f);
         OutpostAndCombatManager.Instance?.FireSolarLance(muzPos, transform.forward, 38f, dmg);
@@ -914,14 +957,16 @@ public class EcoReclaimerPlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// Reduces HP and triggers respawn if depleted.
+    /// Reduces HP and triggers respawn if depleted. Returns true if damage was registered.
     /// </summary>
-    public void TakeDamage(float dmg)
+    public bool TakeDamage(float dmg)
     {
-        if (IsDashing) return; // Invulnerability i-frame during Eco-Dash!
+        if (IsDashing || DamageCooldownTimer > 0f) return false;
 
+        DamageCooldownTimer = DAMAGE_COOLDOWN_DURATION;
         HP -= dmg;
-        CombatJuice.Instance?.AddCameraTrauma(0.32f);
+        CombatJuice.Instance?.AddCameraTrauma(0.30f);
+        CombatJuice.Instance?.TriggerHitstop(0.045f);
         SolarisGameManager.Instance?.PlaySfx("enemy_hit");
 
         if (HP <= 0f)
@@ -930,8 +975,29 @@ public class EcoReclaimerPlayer : MonoBehaviour
             DustTank = 0f;
             Heat = 0f;
             Overheated = false;
+            DamageCooldownTimer = 0f;
             float respawnY = _world != null ? _world.GetHeight(0f, 28f) : 0f;
             transform.position = new Vector3(0f, respawnY + 0.04f, 28f);
+        }
+        return true;
+    }
+
+    private void UpdateDamageCooldownVisual(float timer)
+    {
+        if (_cachedPlayerRenderers == null || _cachedPlayerRenderers.Length == 0)
+        {
+            _cachedPlayerRenderers = GetComponentsInChildren<Renderer>();
+        }
+        if (_cachedPlayerRenderers == null) return;
+
+        bool visible = timer <= 0f || (Mathf.FloorToInt(timer / 0.065f) % 2 == 0);
+        for (int i = 0; i < _cachedPlayerRenderers.Length; i++)
+        {
+            var r = _cachedPlayerRenderers[i];
+            if (r != null && r != _vacuumLine && r != _vacuumReticle)
+            {
+                r.enabled = visible;
+            }
         }
     }
 
@@ -962,5 +1028,19 @@ public class EcoReclaimerPlayer : MonoBehaviour
                 break;
         }
         SolarisGameManager.Instance?.PlaySfx("upgrade_unlock");
+    }
+
+    public void TriggerGunRecoil(float kickDist, float pitchAngle)
+    {
+        if (_riflePivot != null)
+        {
+            _riflePivot.localPosition = _rifleBaseLocalPos - new Vector3(0f, 0f, kickDist);
+            _riflePivot.localRotation = _rifleBaseLocalRot * Quaternion.Euler(-pitchAngle, 0f, 0f);
+        }
+    }
+
+    public void AddRecoilImpulse(Vector3 impulse)
+    {
+        _recoilVelocity += impulse;
     }
 }
